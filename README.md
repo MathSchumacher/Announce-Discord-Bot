@@ -1,60 +1,142 @@
-# Announce-Discord-Bot
+# 📢 Announce Discord Bot
+Por **Matheus Schumacher**
 
-![Node.js](https://img.shields.io/badge/-Node.js-blue?logo=nodejs&logoColor=white) ![License](https://img.shields.io/badge/license-ISC-green)
+Um bot avançado para envio de **anúncios via DM** no Discord, com suporte a anexos, filtros de usuários, paginação de membros e controle inteligente de rate limit — capaz de funcionar em servidores pequenos ou gigantes (+20.000 membros) com segurança.
 
-## 📝 Description
+---
 
-Announce-Discord-Bot is a Node.js-based tool designed to streamline announcements and updates within your Discord community. While details are currently limited, its core functionality revolves around efficiently delivering information to your server members. Stay tuned for updates as development progresses and more features are revealed!
+# ✨ Funcionalidades Principais
 
-## 🛠️ Tech Stack
-
-- ⬢ Node.js
-
-
-## 📦 Key Dependencies
-
+### ✅ Enviar anúncios por DM para todos os membros
+Comando:
 ```
-discord.js: ^14.24.2
-dotenv: ^17.2.3
+!announce Sua mensagem aqui
 ```
 
-## 🚀 Run Commands
+### 📎 Suporte a anexos
+Basta anexar imagens, vídeos ou PDFs ao usar o comando.
+O bot enviará **a mesma mensagem + anexos** para cada usuário.
 
-- **test**: `npm run test`
+### 🚫 Ignorar usuários específicos
+Use:
+```
+!announce Mensagem aqui -{USER_ID}
+```
+Exemplo:
+```
+!announce Promoção nova! -{111111111111111111} -{222222222222222222}
+```
 
+### 🎯 Enviar somente para usuários específicos
+Comando alternativo:
+```
+!announcefor Mensagem +{USER_ID} +{USER_ID2}
+```
+Exemplo:
+```
+!announcefor Teste VIP +{111111111111111111} +{222222222222222222}
+```
 
-## 📁 Project Structure
+### 🧩 Paginação + Anti-Travamento
+- Envia 1 DM por vez
+- Delay automático entre envios (evita rate limit)
+- Lê membros por página (não carrega tudo em RAM)
+- Funciona em servidores **com dezenas de milhares de membros**
 
+---
+
+# 🛠 Como Criar Seu Bot no Discord
+
+### 1. Acesse o painel de desenvolvedor
+🔗 https://discord.com/developers/applications
+
+### 2. Crie uma nova aplicação
+Bot → "Add Bot"
+
+### 3. Pegue o Token do Bot
+Em **Bot → Token**
+
+> ⚠️ **Nunca compartilhe seu token!**
+
+### 4. Ative os Intents Necessários
+Em **Bot → Privileged Gateway Intents**:
+
+- ✔ Server Members Intent
+- ✔ Message Content Intent
+- ✔ Presence Intent (opcional)
+
+### 5. Pegue o Guild ID (ID do servidor)
+Ative o modo desenvolvedor:
+- Configurações → Avançado → Modo desenvolvedor
+- Clique com botão direito no servidor → "Copiar ID"
+
+---
+
+# 📦 Instalação e Execução Local
+
+### 1. Instale dependências
+```
+npm install
+```
+
+### 2. Crie um arquivo **.env** na raiz
+dentro dele:
+```
+DISCORD_TOKEN=seu_token_aqui
+```
+
+### 3. Inicie o bot
+```
+node index.js
+```
+
+---
+
+# 🚀 Deploy na Nuvem (Railway, Render, etc.)
+
+## ▶ Railway (recomendado)
+1. Vá em **Variables**
+2. Adicione:
+```
+DISCORD_TOKEN = seu_token
+```
+3. Deploy → Redeploy
+
+> Não envie seu `.env` para o GitHub.
+
+---
+
+# 📂 Estrutura do Projeto
 ```
 .
 ├── index.js
-└── package.json
+├── package.json
+├── .gitignore
+└── README.md
 ```
+---
 
-## 🛠️ Development Setup
-
-### Node.js/JavaScript Setup
-1. Install Node.js (v18+ recommended)
-2. Install dependencies: `npm install` or `yarn install`
-3. Start development server: (Check scripts in `package.json`, e.g., `npm run dev`)
-
-
-## 👥 Contributing
-
-Contributions are welcome! Here's how you can help:
-
-1. **Fork** the repository
-2. **Clone** your fork: `git clone https://github.com/MathSchumacher/Announce-Discord-Bot.git`
-3. **Create** a new branch: `git checkout -b feature/your-feature`
-4. **Commit** your changes: `git commit -am 'Add some feature'`
-5. **Push** to your branch: `git push origin feature/your-feature`
-6. **Open** a pull request
-
-Please ensure your code follows the project's style guidelines and includes tests where applicable.
-
-## 📜 License
-
-This project is licensed under the ISC License.
+# 🧩 Scripts
+```
+npm start
+```
+(Executa `node index.js`)
 
 ---
-*This README was generated with ❤️ by ReadmeBuddy*
+
+# 🤝 Contribuição
+Pull requests são bem-vindos.
+
+1. Fork o repositório
+2. Crie uma branch
+3. Faça commits claros
+4. Envie PR
+
+---
+
+# 🛡 Licença
+Código desenvolvido por **Matheus Schumacher**.
+Uso livre.
+
+---
+Se quiser, posso formatar este README com badges, cores, tabela de comandos ou adicionar screenshots.
