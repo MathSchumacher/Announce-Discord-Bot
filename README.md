@@ -1,90 +1,60 @@
-📢 Discord Mass DM Announcer Bot
+# Announce-Discord-Bot
 
-Bot de anúncios via DM para servidores Discord, com suporte total a anexos, filtros de usuários, paginação de membros e sistema antitravamento.
+![Node.js](https://img.shields.io/badge/-Node.js-blue?logo=nodejs&logoColor=white) ![License](https://img.shields.io/badge/license-ISC-green)
 
-🚀 Funcionalidades
-✅ 1. Enviar anúncios via DM para todos os membros do servidor
+## 📝 Description
 
-Use o comando:
+Announce-Discord-Bot is a Node.js-based tool designed to streamline announcements and updates within your Discord community. While details are currently limited, its core functionality revolves around efficiently delivering information to your server members. Stay tuned for updates as development progresses and more features are revealed!
 
-!announce Sua mensagem aqui
+## 🛠️ Tech Stack
 
-
-O bot enviará a mensagem para cada usuário individualmente (exceto bots).
-
-📎 2. Suporte total a anexos
-
-Você pode anexar:
-
-imagens
-
-vídeos
-
-PDFs
-
-qualquer arquivo suportado pelo Discord
-
-Exemplo:
-
-!announce Promoção nova! Confiram o PDF.
+- ⬢ Node.js
 
 
-(Anexe o arquivo na mesma mensagem)
+## 📦 Key Dependencies
 
-🚫 3. Excluir usuários do envio
+```
+discord.js: ^14.24.2
+dotenv: ^17.2.3
+```
 
-Use -{ID} para não enviar para um usuário específico.
+## 🚀 Run Commands
 
-Exemplo:
-
-!announce Olá pessoal! -{828770583709220915} -{422752998314213380}
-
-🎯 4. Enviar apenas para usuários específicos
-
-Use +{ID} para enviar somente para os IDs informados.
-
-Exemplo:
-
-!announcefor Enviando somente para vocês! +{828770583709220915} +{422752998314213380}
-
-📦 5. Paginador interno + rate limit inteligente
-
-O bot:
-
-envia DM membro por membro
-
-pausa automaticamente (500 ms)
-
-evita rate-limit global
-
-funciona tranquilamente em servidores com mais de 20.000 membros
-
-🧩 Comandos
-!announce
-
-Envia mensagem + anexos para todos os membros, com exceções opcionais.
-
-!announcefor
-
-Envia mensagem + anexos apenas para usuários selecionados.
-
-📌 Requisitos
-
-Node.js 18+
-
-Uma aplicação/bot no Discord
-
-Token do bot
-
-⚙️ Configuração
-1. Instale dependências
-npm install
-
-2. Crie um arquivo .env na raiz
-DISCORD_TOKEN=SEU_TOKEN_AQUI
-
-3. Inicie o bot
-node index.js
+- **test**: `npm run test`
 
 
-O bot ficará online e pronto.
+## 📁 Project Structure
+
+```
+.
+├── index.js
+└── package.json
+```
+
+## 🛠️ Development Setup
+
+### Node.js/JavaScript Setup
+1. Install Node.js (v18+ recommended)
+2. Install dependencies: `npm install` or `yarn install`
+3. Start development server: (Check scripts in `package.json`, e.g., `npm run dev`)
+
+
+## 👥 Contributing
+
+Contributions are welcome! Here's how you can help:
+
+1. **Fork** the repository
+2. **Clone** your fork: `git clone https://github.com/MathSchumacher/Announce-Discord-Bot.git`
+3. **Create** a new branch: `git checkout -b feature/your-feature`
+4. **Commit** your changes: `git commit -am 'Add some feature'`
+5. **Push** to your branch: `git push origin feature/your-feature`
+6. **Open** a pull request
+
+Please ensure your code follows the project's style guidelines and includes tests where applicable.
+
+## 📜 License
+
+This project is licensed under the ISC License.
+
+---
+*This README was generated with ❤️ by ReadmeBuddy*
