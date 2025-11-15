@@ -139,4 +139,3 @@ Código desenvolvido por **Matheus Schumacher**.
 Uso livre.
 
 ---
-Se quiser, posso formatar este README com badges, cores, tabela de comandos ou adicionar screenshots.
