@@ -1,303 +1,355 @@
 /**
- * Announce Bot — Version C (Auto-Resume after rebuild)
+ * Announce Bot - Secure Opt-in DM version
  *
- * Recursos:
- * - 3 workers paralelos (producer-consumer)
- * - Delay adaptativo + rate limit aware
- * - Persistência automática em progress.json
- * - AUTO-RESUME após QUEDA, KILL, REDEPLOY, BUILD NOVO
- * - Sem confirmação no Discord: retomada totalmente automática
+ * Safety-first:
+ *  - Only sends DMs to users who explicitly opt-in (!subscribe)
+ *  - Admin-only announce to subscribers via !announce_subscribers
+ *  - Channel announcement command available (!announce_channel)
+ *  - Persist subscribers & progress to disk (JSON)
+ *  - Conservative adaptive rate limiter (start 1200ms)
+ *
+ * Requirements:
+ *  - Node 18+
+ *  - discord.js v14
+ *  - .env with DISCORD_TOKEN in your deployment (Railway env vars recommended)
+ *  - Enable in Developer Portal: Server Members Intent & Message Content Intent
+ *
+ * Commands:
+ *  - !subscribe            -> opt in to receive DMs from this bot
+ *  - !unsubscribe          -> opt out
+ *  - !subs_count           -> check how many subs exist (public)
+ *  - !announce_subscribers <message> [attach files] -> admin-only, sends to subscribers (DMs)
+ *  - !announce_channel <message> [attach files] -> admin-only, posts in channel
+ *  - !status               -> admin-only, shows current stats
  */
 
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const { Client, GatewayIntentBits, Partials } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits } = require("discord.js");
 
-// ========== CONFIG ==========
-const WORKERS = 3;
-const PAGE_LIMIT = 1000;
-const RETRIES = 1;
+// ---------- CONFIG ----------
+const SUB_FILE = path.resolve(__dirname, "subscribers.json"); // persisted list of subscribed user IDs
+const PROG_FILE = path.resolve(__dirname, "announce_progress.json"); // progress when sending to subs
+const SAVE_INTERVAL_MS = 10000; // periodic save interval to minimize IO
 
-const GLOBAL_MIN = 350;
-const GLOBAL_MAX = 5000;
-const GLOBAL_INITIAL = 500;
+// Rate-limit conservative defaults
+const GLOBAL_INITIAL_DELAY = 1200; // ms start
+const GLOBAL_MIN = 800; // won't go below
+const GLOBAL_MAX = 5000; // won't go above
 
-const WORKER_MIN = 350;
-const WORKER_MAX = 5000;
-const WORKER_INITIAL = 450;
-
-const SAVE_EVERY = 30;
-const PROGRESS_FILE = path.resolve(__dirname, "progress.json");
-const TEMP_FILE = path.resolve(__dirname, "progress.tmp.json");
-// =============================
+const RETRY_ON_ERROR = 1; // how many extra attempts on transient errors
+// ----------------------------
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMembers
   ],
-  partials: [Partials.Channel],
+  partials: [Partials.Channel]
 });
 
-let queue = [];
-let producerDone = false;
-
-let stats = { queued: 0, sent: 0, failed: 0, skipped: 0 };
-let blocked = new Set();
-
-let saveCounter = 0;
-
-// delays
-let globalDelay = GLOBAL_INITIAL;
+// In-memory state
+let subscribers = new Set();
+let progress = null; // { queued: [ids], sent: number, failed: number } when running an announce
+let sendingRun = false;
+let globalDelay = GLOBAL_INITIAL_DELAY;
 let lastSendTs = 0;
 let limiterLocked = false;
-let workerDelay = Array.from({ length: WORKERS }, () => WORKER_INITIAL);
+let saveTimer = null;
 
+// Helpers: persist/load
+function loadJSON(file, defaultValue) {
+  try {
+    if (!fs.existsSync(file)) return defaultValue;
+    const raw = fs.readFileSync(file, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn(`Erro lendo ${file}:`, err);
+    return defaultValue;
+  }
+}
+function saveJSON(file, data) {
+  try {
+    fs.writeFileSync(file + ".tmp", JSON.stringify(data, null, 2));
+    fs.renameSync(file + ".tmp", file);
+  } catch (err) {
+    console.warn("Erro salvando", file, err);
+  }
+}
+
+// Initialize persisted subscribers
+(function initPersist() {
+  const s = loadJSON(SUB_FILE, null);
+  if (s && Array.isArray(s)) {
+    subscribers = new Set(s);
+    console.log(`Carregado ${subscribers.size} subscribers.`);
+  } else {
+    subscribers = new Set();
+  }
+  progress = loadJSON(PROG_FILE, null); // maybe null or previous progress
+})();
+
+// Periodic save of subscribers and progress
+saveTimer = setInterval(() => {
+  saveJSON(SUB_FILE, Array.from(subscribers));
+  if (progress) saveJSON(PROG_FILE, progress);
+}, SAVE_INTERVAL_MS);
+
+// Graceful shutdown saving
+process.on("exit", () => {
+  saveJSON(SUB_FILE, Array.from(subscribers));
+  if (progress) saveJSON(PROG_FILE, progress);
+});
+process.on("SIGINT", () => process.exit());
+process.on("SIGTERM", () => process.exit());
+
+// Utility small wait
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function atomicSave(file, data) {
-  try {
-    fs.writeFileSync(TEMP_FILE, JSON.stringify(data, null, 2));
-    fs.renameSync(TEMP_FILE, file);
-  } catch (err) { console.warn("Save error:", err); }
-}
-
-function loadProgress() {
-  if (!fs.existsSync(PROGRESS_FILE)) return null;
-  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, "utf8")); }
-  catch { return null; }
-}
-
-function clearProgress() {
-  try { if (fs.existsSync(PROGRESS_FILE)) fs.unlinkSync(PROGRESS_FILE); }
-  catch {}
-}
-
-async function acquireSlot() {
+// Limiter: acquire slot ensures spacing at least globalDelay and serializes sends
+async function acquireSendSlot() {
   while (true) {
-    const elapsed = Date.now() - lastSendTs;
+    const now = Date.now();
+    const elapsed = now - lastSendTs;
     if (!limiterLocked && elapsed >= globalDelay) {
       limiterLocked = true;
       return;
     }
-    await wait(20);
+    await wait(50);
   }
 }
-
-function releaseSlot() {
-  limiterLocked = false;
+function releaseSendSlot() {
   lastSendTs = Date.now();
+  limiterLocked = false;
+}
+function onSendSuccess() {
+  // slightly reduce delay on success, but keep above min
+  globalDelay = Math.max(GLOBAL_MIN, Math.round(globalDelay * 0.98));
+}
+function onRateLimit() {
+  globalDelay = Math.min(GLOBAL_MAX, Math.round(globalDelay * 1.4));
 }
 
-function onSuccess(workerIdx) {
-  workerDelay[workerIdx] = Math.max(WORKER_MIN, workerDelay[workerIdx] * 0.95);
-  globalDelay = Math.max(GLOBAL_MIN, globalDelay * 0.97);
-}
+// Send DM with safe retries and classification
+async function safeSendDM(user, payload) {
+  // user is a User object or a Member.user
+  if (!user) return { ok: false, reason: "no_user" };
 
-function onRate(workerIdx) {
-  workerDelay[workerIdx] = Math.min(WORKER_MAX, workerDelay[workerIdx] * 1.5);
-  globalDelay = Math.min(GLOBAL_MAX, globalDelay * 1.5);
-}
-
-function parseSelectors(text) {
-  const ignore = new Set();
-  const only = new Set();
-  const regex = /([+-])\{(\d{5,30})\}/g;
-  let m;
-  while ((m = regex.exec(text)) !== null) {
-    const type = m[1];
-    const id = m[2];
-    if (type === "-") ignore.add(id);
-    else only.add(id);
-  }
-  const msg = text.replace(regex, "").trim();
-  return { msg, ignore, only };
-}
-
-async function sendDM(member, payload, worker) {
-  if (!member?.user) return { ok: false };
-
-  const id = member.user.id;
-  if (blocked.has(id)) return { ok: false, reason: "blocked" };
-
-  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+  // quick skip if user blocked in the past (we don't store blocks across runs here to preserve privacy)
+  for (let attempt = 0; attempt <= RETRY_ON_ERROR; attempt++) {
     try {
-      await acquireSlot();
-      await member.send(payload);
-      releaseSlot();
-
-      onSuccess(worker);
+      await acquireSendSlot();
+      await user.send(payload);
+      releaseSendSlot();
+      onSendSuccess();
       return { ok: true };
     } catch (err) {
-      releaseSlot();
+      // free the lock if held
+      if (limiterLocked) {
+        limiterLocked = false;
+        lastSendTs = Date.now();
+      }
 
-      const code = err.status ?? err.code ?? err.statusCode ?? err.rawError?.status;
-
-      if (code === 50007 || code === 403 || code === 50013) {
-        blocked.add(id);
-        stats.skipped++;
+      // classify
+      const status = err?.status ?? err?.code ?? err?.statusCode ?? null;
+      // DM closed or cannot message user
+      if (status === 50007 || status === 403 || status === 50013) {
+        // don't retry
         return { ok: false, reason: "dm_closed" };
       }
-
-      if (code === 429) {
-        console.warn("429 detected → Backoff");
-        onRate(worker);
+      // rate limit
+      if (status === 429) {
+        console.warn("⚠️ Rate limited (429). Backing off.");
+        onRateLimit();
         await wait(globalDelay);
-        continue;
+        continue; // retry
       }
-
-      await wait(400);
+      // transient network or other -> brief backoff, then retry if attempts left
+      console.warn("Erro ao enviar DM:", err?.message ?? err, "retry:", attempt);
+      await wait(600 * (attempt + 1));
     }
   }
-
-  stats.failed++;
   return { ok: false, reason: "failed" };
 }
 
-async function resumeQueue(guild, progress, text, attachments) {
-  console.log("Restaurando fila a partir do progress.json…");
-
-  for (const id of progress.queued) {
-    const member = await guild.members.fetch(id).catch(() => null);
-    if (!member) continue;
-
-    const payload = {};
-    if (text) payload.content = text;
-    if (attachments.length) payload.files = attachments;
-
-    queue.push({ id, member, payload });
-    stats.queued++;
-  }
-
-  console.log("Fila restaurada:", stats.queued, "membros.");
-  producerDone = true;
-}
-
-async function produceQueue(guild, text, attachments, ignore, only, mode) {
-  let after;
-
-  while (true) {
-    const batch = await guild.members.list({ limit: PAGE_LIMIT, after });
-    if (batch.size === 0) break;
-
-    for (const member of batch.values()) {
-      if (member.user.bot) continue;
-
-      const id = member.user.id;
-
-      if (mode === "announce" && ignore.has(id)) continue;
-      if (mode === "for" && !only.has(id)) continue;
-
-      const payload = {};
-      if (text) payload.content = text;
-      if (attachments.length) payload.files = attachments;
-
-      queue.push({ id, member, payload });
-      stats.queued++;
-    }
-
-    after = batch.last().user.id;
-    await wait(120);
-  }
-
-  producerDone = true;
-}
-
-function saveProgress() {
-  const snapshot = {
-    queued: queue.map(x => x.id),
-    stats,
-    time: Date.now(),
-  };
-  atomicSave(PROGRESS_FILE, snapshot);
-}
-
-async function workerLoop(idx) {
-  console.log("Worker", idx, "iniciado");
-
-  while (true) {
-    const job = queue.shift();
-
-    if (!job) {
-      if (producerDone) return;
-      await wait(80);
-      continue;
-    }
-
-    if (blocked.has(job.id)) {
-      stats.skipped++;
-      continue;
-    }
-
-    await wait(workerDelay[idx]);
-
-    const result = await sendDM(job.member, job.payload, idx);
-    if (result.ok) stats.sent++;
-
-    if (++saveCounter >= SAVE_EVERY) {
-      saveProgress();
-      saveCounter = 0;
-    }
-  }
-}
-
+// ------------ Command handlers ------------
 client.on("messageCreate", async (msg) => {
-  if (!msg.content.startsWith("!announce") &&
-      !msg.content.startsWith("!announcefor")) return;
   if (msg.author.bot) return;
 
-  const mode = msg.content.startsWith("!announcefor") ? "for" : "announce";
-  const raw = msg.content.replace("!announcefor", "").replace("!announce", "").trim();
-  const { msg: text, ignore, only } = parseSelectors(raw);
+  const content = msg.content?.trim();
+  if (!content) return;
 
-  const attachments = [];
-  for (const a of msg.attachments.values()) attachments.push(a.url);
+  const isAdmin = msg.member?.permissions?.has(PermissionFlagsBits.Administrator);
 
-  const guild = msg.guild;
-  if (!guild) return msg.reply("Use o comando dentro do servidor.");
-
-  // RESET DE EXECUÇÃO
-  queue = [];
-  producerDone = false;
-  stats = { queued: 0, sent: 0, failed: 0, skipped: 0 };
-  blocked = new Set();
-  globalDelay = GLOBAL_INITIAL;
-  workerDelay = Array.from({ length: WORKERS }, () => WORKER_INITIAL);
-  saveCounter = 0;
-
-  msg.reply("📢 Enfileirando membros…");
-
-  const saved = loadProgress();
-
-  if (saved && saved.queued.length > 0) {
-    msg.reply("🔁 **Retomando automaticamente** envio interrompido anteriormente…");
-
-    await resumeQueue(guild, saved, text, attachments);
-  } else {
-    clearProgress();
-    msg.reply("🆕 Iniciando novo envio…");
-    await produceQueue(guild, text, attachments, ignore, only, mode);
+  // -- subscribe
+  if (content === "!subscribe") {
+    const uid = msg.author.id;
+    if (subscribers.has(uid)) {
+      return msg.reply("Você já está inscrito para receber anúncios por DM.");
+    }
+    subscribers.add(uid);
+    saveJSON(SUB_FILE, Array.from(subscribers));
+    return msg.reply("Obrigado — você foi inscrito com sucesso. Você poderá receber anúncios por DM.");
   }
 
-  const workers = [];
-  for (let i = 0; i < WORKERS; i++) {
-    workers.push(workerLoop(i));
+  // -- unsubscribe
+  if (content === "!unsubscribe") {
+    const uid = msg.author.id;
+    if (!subscribers.has(uid)) {
+      return msg.reply("Você não está inscrito.");
+    }
+    subscribers.delete(uid);
+    saveJSON(SUB_FILE, Array.from(subscribers));
+    return msg.reply("Você foi removido da lista de inscritos. Não receberá mais DMs.");
   }
 
-  await Promise.all(workers);
+  // -- subs count
+  if (content === "!subs_count") {
+    return msg.reply(`Número de inscritos (opt-in): ${subscribers.size}`);
+  }
 
-  saveProgress();
-  clearProgress();
+  // -- status (admin only)
+  if (content === "!status") {
+    if (!isAdmin) return msg.reply("Apenas administradores podem usar esse comando.");
+    const p = progress ? `progress queued=${progress.queued?.length||0} sent=${progress.sent||0} failed=${progress.failed||0}` : "nenhuma execução em andamento";
+    return msg.reply(`Status:\nSubscribers: ${subscribers.size}\nRate delay: ${globalDelay}ms\n${p}`);
+  }
 
-  msg.reply(`✅ Finalizado!\nEnviadas: ${stats.sent}\nFalhas: ${stats.failed}\nDM Fechada: ${stats.skipped}`);
+  // -- announce in channel (admin)
+  if (content.startsWith("!announce_channel")) {
+    if (!isAdmin) return msg.reply("Apenas administradores podem usar este comando.");
+    const messageText = content.replace("!announce_channel", "").trim();
+    if (!messageText && msg.attachments.size === 0) return msg.reply("Use: `!announce_channel <mensagem>` e opcionalmente anexe arquivos.");
+    // build payload for channel
+    const payload = {};
+    if (messageText) payload.content = messageText;
+    if (msg.attachments.size > 0) {
+      payload.files = [...msg.attachments.values()].map(a => a.url);
+    }
+    try {
+      await msg.channel.send(payload);
+      return msg.reply("✅ Mensagem enviada no canal.");
+    } catch (err) {
+      console.error("Erro enviando no canal:", err);
+      return msg.reply("❌ Falha ao enviar no canal. Verifique permissões e logs.");
+    }
+  }
+
+  // -- announce to subscribers (admin)
+  if (content.startsWith("!announce_subscribers")) {
+    if (!isAdmin) return msg.reply("Apenas administradores podem usar este comando.");
+    if (sendingRun) return msg.reply("Já existe um envio em andamento. Aguarde terminar ou verifique `!status`.");
+    const body = content.replace("!announce_subscribers", "").trim();
+    if (!body && msg.attachments.size === 0) return msg.reply("Use: `!announce_subscribers <mensagem>` e opcionalmente anexe arquivos. Só enviaremos para inscritos (opt-in).");
+
+    // gather payload and queued subscriber IDs
+    const attachUrls = msg.attachments.size > 0 ? [...msg.attachments.values()].map(a => a.url) : [];
+    const msgPayload = {};
+    if (body) msgPayload.content = body;
+    if (attachUrls.length) msgPayload.files = attachUrls;
+
+    // Build list of subscribers that are still in this guild (optionally: only members of this guild)
+    // For maximum safety, we'll only DM subscribers who are members of the server where the command was issued.
+    const guild = msg.guild;
+    if (!guild) return msg.reply("Comando deve ser usado dentro do servidor para garantir que o anúncio seja restrito ao contexto do servidor.");
+
+    // Prepare queue: check membership and member.fetch for valid DM user object
+    const queued = [];
+    for (const uid of subscribers) {
+      try {
+        const member = await guild.members.fetch(uid).catch(() => null);
+        if (!member) continue; // subscriber not in this guild or cannot be fetched
+        queued.push({ id: uid, user: member.user }); // store User object for quick send
+      } catch (err) { continue; }
+    }
+
+    if (queued.length === 0) {
+      return msg.reply("Nenhum inscrito (opt-in) válido encontrado neste servidor para enviar DMs.");
+    }
+
+    // Confirm and start
+    msg.reply(`⚠️ Este comando enviará DMs para ${queued.length} inscritos deste servidor. Iniciando em breve...`);
+
+    // Initialize progress object for persistence
+    progress = {
+      mode: "subscribers",
+      guildId: guild.id,
+      payload: msgPayload,
+      queued: queued.map(q => q.id),
+      nextIndex: 0,
+      sent: 0,
+      failed: 0,
+      timestampStart: Date.now()
+    };
+    saveJSON(PROG_FILE, progress);
+
+    // Start sending loop (single-threaded to minimize resource/abuse)
+    sendingRun = true;
+    (async () => {
+      try {
+        for (let i = progress.nextIndex; i < progress.queued.length; i++) {
+          const uid = progress.queued[i];
+          // Avoid heavy CPU: yield occasionally
+          if (i % 50 === 0) await wait(20);
+
+          // build user object
+          const member = await guild.members.fetch(uid).catch(() => null);
+          if (!member) {
+            progress.failed++;
+            progress.nextIndex = i + 1;
+            saveJSON(PROG_FILE, progress);
+            continue;
+          }
+
+          const res = await safeSendDM(member.user, msgPayload);
+          if (res.ok) progress.sent++;
+          else {
+            if (res.reason === "dm_closed") {
+              // don't count as failed, but skip
+            } else {
+              progress.failed++;
+            }
+          }
+          progress.nextIndex = i + 1;
+
+          // persist every N
+          if (progress.nextIndex % 20 === 0) saveJSON(PROG_FILE, progress);
+        }
+      } catch (err) {
+        console.error("Erro durante envio de subscribers:", err);
+      } finally {
+        saveJSON(PROG_FILE, progress);
+        sendingRun = false;
+        // keep progress file so you can inspect, but we remove when done
+        // On completion, delete progress to indicate finished run
+        try { fs.unlinkSync(PROG_FILE); } catch {}
+        msg.reply(`✅ Envio finalizado. Enviadas: ${progress.sent} | Falhas: ${progress.failed}`);
+        progress = null;
+      }
+    })();
+
+    return;
+  }
+
+  // -- fallback: ignore
 });
 
+// On startup, log basic info
 client.on("ready", () => {
-  console.log("Bot online:", client.user.tag);
+  console.log(`Bot online: ${client.user.tag}`);
+  console.log(`Subscribers: ${subscribers.size}`);
+  // if progress file exists, log that a saved run can be resumed by an admin re-issuing announce_subscribers (or auto-resume later)
+  if (progress && progress.queued && progress.queued.length > 0) {
+    console.log("Encontrado progress salvo: possível envio interrompido. Admins podem usar !status para ver.");
+  }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// login
+client.login(process.env.DISCORD_TOKEN).catch(err => {
+  console.error("Erro ao logar:", err);
+  process.exit(1);
+});
