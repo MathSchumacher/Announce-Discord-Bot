@@ -1,266 +1,277 @@
-/**
- * ==============================
- *     VERSION B PRIME (SAFE)
- *  Ultra Secure + Fast + Resume
- * 3 Internal Workers - Railway Safe
- * ==============================
- */
-
 require("dotenv").config();
 const fs = require("fs");
-const path = require("path");
 const { Client, GatewayIntentBits, Partials } = require("discord.js");
 
-// ===== CONFIG =====
-const WORKERS = 3;
-const DELAY_MIN = 350;
-const DELAY_MAX = 5000;
-const DELAY_START = 500;
+// ================================
+// CONFIGURAÇÕES
+// ================================
+const CHUNK_SIZE = 30;        // Pequeno = seguro no Railway
+const WORKERS = 3;            // 3 workers paralelos
+const DELAY = 500;            // 0.5s por mensagem
 const RETRY_LIMIT = 2;
-const PAGE_LIMIT = 1000;
+// ================================
 
-const JOB_FILE = path.resolve(__dirname, "job.json");
-// ===================
 
-let lockActive = false;               // prevents multiple commands
-let jobId = null;                     // identifies current job
-let queue = [];                       // pending user IDs
-let completed = new Set();            // finished user IDs
-let stats = { sent: 0, failed: 0, dmClosed: 0, total: 0 };
+// ===========================================
+// Funções de persistência (queue.json)
+// ===========================================
+function loadQueue() {
+    if (!fs.existsSync("queue.json")) {
+        return {
+            active: false,
+            guildId: null,
+            message: null,
+            attachments: [],
+            ignore: [],
+            only: [],
+            after: null,
+            queue: [],
+            sent: [],
+            failed: []
+        };
+    }
+    return JSON.parse(fs.readFileSync("queue.json", "utf-8"));
+}
 
-// Adaptive delays
-let globalDelay = DELAY_START;
-const workerDelay = Array.from({ length: WORKERS }, () => DELAY_START);
+function saveQueue(data) {
+    fs.writeFileSync("queue.json", JSON.stringify(data, null, 2));
+}
 
+
+// ===========================================
+// Discord Client
+// ===========================================
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages
-  ],
-  partials: [Partials.Channel]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.DirectMessages
+    ],
+    partials: [Partials.Channel]
 });
 
-function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+client.on("clientReady", () => {
+    console.log(`Bot online como ${client.user.tag}`);
+    resumeIfNeeded();
+});
 
-// ========== JOB SAVE / LOAD ==========
-function saveJob() {
-  fs.writeFileSync(JOB_FILE, JSON.stringify({
-    jobId,
-    queue,
-    completed: [...completed],
-    stats
-  }, null, 2));
+
+// ===========================================
+// Util
+// ===========================================
+function wait(ms) {
+    return new Promise(res => setTimeout(res, ms));
 }
 
-function loadJob() {
-  if (!fs.existsSync(JOB_FILE)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(JOB_FILE, "utf8"));
-  } catch {
-    return null;
-  }
-}
+async function sendDM(member, payload) {
+    for (let i = 1; i <= RETRY_LIMIT; i++) {
+        try {
+            await member.send(payload);
+            return { ok: true };
+        } catch (err) {
+            console.log(`Erro enviando DM → ${member.user.tag}: Tentativa ${i}`);
+            await wait(1500 * i);
 
-function clearJob() {
-  try { fs.unlinkSync(JOB_FILE); } catch {}
-}
-
-// =====================================
-// ======== MESSAGE SENDER =============
-// =====================================
-async function trySend(guild, uid, payload, workerIdx) {
-  let member;
-  
-  try {
-    member = await guild.members.fetch(uid);
-  } catch {
-    stats.failed++;
-    return false;
-  }
-
-  for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
-    try {
-      await wait(workerDelay[workerIdx]);
-      await member.send(payload);
-
-      stats.sent++;
-      completed.add(uid);
-      workerDelay[workerIdx] = Math.max(DELAY_MIN, workerDelay[workerIdx] * 0.92);
-      globalDelay = Math.max(DELAY_MIN, globalDelay * 0.94);
-      return true;
-
-    } catch (err) {
-      const code = err?.status ?? err?.code ?? null;
-
-      if (code === 50007 || code === 403) {
-        stats.dmClosed++;
-        completed.add(uid);
-        return false;
-      }
-
-      if (code === 429) {
-        const retry = (err?.rawError?.retry_after || 1) * 1000;
-        globalDelay = Math.min(DELAY_MAX, retry);
-        workerDelay[workerIdx] = Math.min(DELAY_MAX, retry);
-        await wait(retry);
-        continue;
-      }
-
-      await wait(800 * attempt);
+            if (err.message?.includes("Cannot send messages")) {
+                return { ok: false, dmClosed: true };
+            }
+        }
     }
-  }
-
-  stats.failed++;
-  completed.add(uid);
-  return false;
+    return { ok: false, dmClosed: false };
 }
 
-// =====================================
-// ========== WORKER ====================
-// =====================================
-async function workerLoop(workerIdx, guild, payload) {
-  while (true) {
-    if (queue.length === 0) {
-      await wait(150);
-      continue;
+
+// ===========================================
+// Producer — adiciona IDs na fila devagar
+// ===========================================
+async function producer(guild, data) {
+    console.log("Producer iniciado...");
+
+    while (true) {
+        const page = await guild.members.list({
+            limit: CHUNK_SIZE,
+            after: data.after || undefined
+        });
+
+        if (page.size === 0) {
+            console.log("Producer: fim da paginação");
+            data.active = true;
+            saveQueue(data);
+            break;
+        }
+
+        for (const m of page.values()) {
+            if (m.user.bot) continue;
+
+            // filtros
+            if (data.ignore.includes(m.user.id)) continue;
+            if (data.only.length > 0 && !data.only.includes(m.user.id)) continue;
+
+            data.queue.push(m.user.id);
+        }
+
+        const last = page.last();
+        data.after = last.user.id;
+
+        console.log(`Producer: carregado → ${data.queue.length} usuários.`);
+        saveQueue(data);
+
+        await wait(200); // evita Railway kill
     }
-
-    const uid = queue.shift();
-
-    if (completed.has(uid)) {
-      continue;
-    }
-
-    await trySend(guild, uid, payload, workerIdx);
-    saveJob();
-
-    if (completed.size >= stats.total) {
-      return;
-    }
-  }
 }
 
-// =====================================
-// =========== PRODUCER ================
-// =====================================
-async function producer(guild, mode, ignore, only) {
-  queue = [];
-  let after;
 
-  while (true) {
-    const members = await guild.members.list({ limit: PAGE_LIMIT, after });
-    if (members.size === 0) break;
+// ===========================================
+// Worker — envia mensagens da fila
+// ===========================================
+async function worker(id) {
+    console.log(`Worker ${id} iniciado.`);
 
-    for (const m of members.values()) {
-      if (m.user.bot) continue;
-      const uid = m.user.id;
+    while (true) {
+        const data = loadQueue();
 
-      if (mode === "announce" && ignore.has(uid)) continue;
-      if (mode === "for"      && !only.has(uid))   continue;
+        if (!data.active) {
+            await wait(300);
+            continue;
+        }
 
-      queue.push(uid);
+        const uid = data.queue.shift();
+        if (!uid) {
+            await wait(300);
+            continue;
+        }
+
+        saveQueue(data);
+
+        try {
+            const guild = client.guilds.cache.get(data.guildId);
+            const member = await guild.members.fetch(uid);
+
+            const payload = {};
+            if (data.message) payload.content = data.message;
+            if (data.attachments.length > 0) payload.files = data.attachments;
+
+            const result = await sendDM(member, payload);
+
+            const updated = loadQueue();
+
+            if (result.ok) updated.sent.push(uid);
+            else updated.failed.push(uid);
+
+            saveQueue(updated);
+
+        } catch (err) {
+            const updated = loadQueue();
+            updated.failed.push(uid);
+            saveQueue(updated);
+        }
+
+        await wait(DELAY);
     }
-
-    after = members.last().id;
-    await wait(50);
-  }
-
-  stats.total = queue.length;
 }
 
-// =====================================
-// ========== SELECTORS ================
-// =====================================
+
+// ===========================================
+// Retomada automática
+// ===========================================
+async function resumeIfNeeded() {
+    const data = loadQueue();
+
+    if (!data.guildId) {
+        console.log("Nenhum job pendente.");
+        return;
+    }
+
+    console.log("Job pendente encontrado, retomando...");
+
+    const guild = client.guilds.cache.get(data.guildId);
+
+    // retomar producer se não finalizado
+    if (!data.active) {
+        producer(guild, data);
+    }
+
+    // iniciar workers
+    for (let i = 0; i < WORKERS; i++) {
+        worker(i);
+    }
+}
+
+
+// ===========================================
+// Parser de filtros -{id} +{id}
+// ===========================================
 function parseSelectors(text) {
-  const ignore = new Set();
-  const only = new Set();
-  const regex = /([+-])\{(\d{5,30})\}/g;
-  let match;
+    const ignore = [];
+    const only = [];
 
-  while ((match = regex.exec(text)) !== null) {
-    const type = match[1];
-    const id = match[2];
+    const regex = /([+-])\{(\d{5,30})\}/g;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        const type = match[1];
+        const id = match[2];
+        if (type === "-") ignore.push(id);
+        if (type === "+") only.push(id);
+    }
 
-    if (type === "-") ignore.add(id);
-    if (type === "+") only.add(id);
-  }
-
-  return { cleaned: text.replace(regex, "").trim(), ignore, only };
+    return {
+        cleaned: text.replace(regex, "").trim(),
+        ignore,
+        only
+    };
 }
 
-// =====================================
-// ========== COMMAND HANDLER ==========
-// =====================================
-client.on("messageCreate", async (msg) => {
-  if (!msg.content.startsWith("!announce")) return;
-  if (msg.author.bot) return;
 
-  if (lockActive) {
-    return msg.reply("❌ Já existe um envio em andamento. Aguarde terminar.");
-  }
+// ===========================================
+// Comando principal
+// ===========================================
+client.on("messageCreate", async (message) => {
+    if (!message.content.startsWith("!announce") &&
+        !message.content.startsWith("!announcefor")) return;
 
-  lockActive = true;
+    if (message.author.bot) return;
 
-  const isFor = msg.content.startsWith("!announcefor");
-  const mode = isFor ? "for" : "announce";
+    const isFor = message.content.startsWith("!announcefor");
 
-  const { cleaned, ignore, only } = parseSelectors(
-    msg.content.replace("!announcefor", "").replace("!announce", "").trim()
-  );
+    const raw = message.content
+        .replace("!announcefor", "")
+        .replace("!announce", "")
+        .trim();
 
-  const attachments = [...msg.attachments.values()].map(a => a.url);
+    const { cleaned, ignore, only } = parseSelectors(raw);
 
-  if (!cleaned && attachments.length === 0) {
-    lockActive = false;
-    return msg.reply("❌ Use `!announce texto -{id}` ou `!announcefor texto +{id}`");
-  }
+    const attachments = [...message.attachments.values()].map(a => a.url);
 
-  const guild = msg.guild;
+    const guild = message.guild;
 
-  // create payload
-  const payload = {};
-  if (cleaned) payload.content = cleaned;
-  if (attachments.length) payload.files = attachments;
+    await message.reply("📢 Preparando envio…");
 
-  // new job id
-  jobId = `job_${Date.now()}`;
-  clearJob();
-  saveJob();
+    const data = {
+        active: false,
+        guildId: guild.id,
+        message: cleaned,
+        attachments,
+        ignore,
+        only,
+        after: null,
+        queue: [],
+        sent: [],
+        failed: []
+    };
 
-  await msg.reply("📢 Preparando envio…");
+    saveQueue(data);
 
-  await producer(guild, mode, ignore, only);
+    producer(guild, data);
 
-  if (stats.total === 0) {
-    lockActive = false;
-    return msg.reply("⚠ Nenhum membro correspondente aos filtros.");
-  }
+    for (let i = 0; i < WORKERS; i++) {
+        worker(i);
+    }
 
-  await msg.reply(`🔄 Iniciando envio (${stats.total} membros)…`);
-
-  const workers = [];
-  for (let i = 0; i < WORKERS; i++) {
-    workers.push(workerLoop(i, guild, payload));
-  }
-
-  await Promise.all(workers);
-
-  await msg.reply(
-    `✅ Finalizado!\nEnviadas: ${stats.sent}\nDM fechada: ${stats.dmClosed}\nFalhas: ${stats.failed}`
-  );
-
-  clearJob();
-  lockActive = false;
+    message.reply("🔄 Envio iniciado em modo seguro (Railway-Proof).");
 });
 
-// =====================================
-// ============== READY ================
-// =====================================
-client.on("ready", () => {
-  console.log(`Bot online como ${client.user.tag}`);
-});
 
+// ===========================================
 client.login(process.env.DISCORD_TOKEN);
