@@ -1,219 +1,92 @@
 require("dotenv").config();
 const fs = require("fs");
-const { Client, GatewayIntentBits, Partials } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require("discord.js");
 
-// ================================
-// CONFIGURAÇÕES
-// ================================
-const CHUNK_SIZE = 30;        // Pequeno = seguro no Railway
-const WORKERS = 3;            // 3 workers paralelos
-const DELAY = 500;            // 0.5s por mensagem
+// ===== CONFIGS SENSÍVEIS =====
+const WORKERS = 3;            // 3 workers paralelos ultra seguros
+const DELAY_BASE = 550;       // delay seguro e estável
 const RETRY_LIMIT = 2;
-// ================================
+const CHUNK_SIZE = 1000;
+const PROGRESS_UPDATE_INTERVAL = 5000; // atualiza embed a cada 5s
+const STATE_FILE = "./state.json";
+// =============================
 
-
-// ===========================================
-// Funções de persistência (queue.json)
-// ===========================================
-function loadQueue() {
-    if (!fs.existsSync("queue.json")) {
+// Carrega estado persistente
+function loadState() {
+    try {
+        return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    } catch {
         return {
             active: false,
             guildId: null,
-            message: null,
+            text: "",
             attachments: [],
             ignore: [],
             only: [],
-            after: null,
             queue: [],
-            sent: [],
-            failed: []
+            stats: { success: 0, fail: 0, closed: 0 },
+            progressMessage: null,
+            mode: "announce"
         };
     }
-    return JSON.parse(fs.readFileSync("queue.json", "utf-8"));
 }
 
-function saveQueue(data) {
-    fs.writeFileSync("queue.json", JSON.stringify(data, null, 2));
+function saveState(state) {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
+let state = loadState();
 
-// ===========================================
-// Discord Client
-// ===========================================
+// Criação do client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.DirectMessages
+        GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.GuildMembers
     ],
     partials: [Partials.Channel]
 });
 
 client.on("clientReady", () => {
     console.log(`Bot online como ${client.user.tag}`);
-    resumeIfNeeded();
+
+    // AUTO-RESUME
+    if (state.active && state.queue.length > 0) {
+        console.log("🔥 Retomando envio anterior...");
+        startWorkers();
+        startProgressUpdater();
+    }
 });
 
-
-// ===========================================
-// Util
-// ===========================================
+// ========= Utils =========
 function wait(ms) {
     return new Promise(res => setTimeout(res, ms));
 }
 
 async function sendDM(member, payload) {
-    for (let i = 1; i <= RETRY_LIMIT; i++) {
+    for (let a = 1; a <= RETRY_LIMIT; a++) {
         try {
             await member.send(payload);
-            return { ok: true };
+            return true;
         } catch (err) {
-            console.log(`Erro enviando DM → ${member.user.tag}: Tentativa ${i}`);
-            await wait(1500 * i);
-
-            if (err.message?.includes("Cannot send messages")) {
-                return { ok: false, dmClosed: true };
-            }
+            if (err.code === 50007) return "closed";
+            await wait(1200 * a);
         }
     }
-    return { ok: false, dmClosed: false };
+    return false;
 }
 
-
-// ===========================================
-// Producer — adiciona IDs na fila devagar
-// ===========================================
-async function producer(guild, data) {
-    console.log("Producer iniciado...");
-
-    while (true) {
-        const page = await guild.members.list({
-            limit: CHUNK_SIZE,
-            after: data.after || undefined
-        });
-
-        if (page.size === 0) {
-            console.log("Producer: fim da paginação");
-            data.active = true;
-            saveQueue(data);
-            break;
-        }
-
-        for (const m of page.values()) {
-            if (m.user.bot) continue;
-
-            // filtros
-            if (data.ignore.includes(m.user.id)) continue;
-            if (data.only.length > 0 && !data.only.includes(m.user.id)) continue;
-
-            data.queue.push(m.user.id);
-        }
-
-        const last = page.last();
-        data.after = last.user.id;
-
-        console.log(`Producer: carregado → ${data.queue.length} usuários.`);
-        saveQueue(data);
-
-        await wait(200); // evita Railway kill
-    }
-}
-
-
-// ===========================================
-// Worker — envia mensagens da fila
-// ===========================================
-async function worker(id) {
-    console.log(`Worker ${id} iniciado.`);
-
-    while (true) {
-        const data = loadQueue();
-
-        if (!data.active) {
-            await wait(300);
-            continue;
-        }
-
-        const uid = data.queue.shift();
-        if (!uid) {
-            await wait(300);
-            continue;
-        }
-
-        saveQueue(data);
-
-        try {
-            const guild = client.guilds.cache.get(data.guildId);
-            const member = await guild.members.fetch(uid);
-
-            const payload = {};
-            if (data.message) payload.content = data.message;
-            if (data.attachments.length > 0) payload.files = data.attachments;
-
-            const result = await sendDM(member, payload);
-
-            const updated = loadQueue();
-
-            if (result.ok) updated.sent.push(uid);
-            else updated.failed.push(uid);
-
-            saveQueue(updated);
-
-        } catch (err) {
-            const updated = loadQueue();
-            updated.failed.push(uid);
-            saveQueue(updated);
-        }
-
-        await wait(DELAY);
-    }
-}
-
-
-// ===========================================
-// Retomada automática
-// ===========================================
-async function resumeIfNeeded() {
-    const data = loadQueue();
-
-    if (!data.guildId) {
-        console.log("Nenhum job pendente.");
-        return;
-    }
-
-    console.log("Job pendente encontrado, retomando...");
-
-    const guild = client.guilds.cache.get(data.guildId);
-
-    // retomar producer se não finalizado
-    if (!data.active) {
-        producer(guild, data);
-    }
-
-    // iniciar workers
-    for (let i = 0; i < WORKERS; i++) {
-        worker(i);
-    }
-}
-
-
-// ===========================================
-// Parser de filtros -{id} +{id}
-// ===========================================
 function parseSelectors(text) {
-    const ignore = [];
-    const only = [];
-
+    const ignore = new Set();
+    const only = new Set();
     const regex = /([+-])\{(\d{5,30})\}/g;
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-        const type = match[1];
-        const id = match[2];
-        if (type === "-") ignore.push(id);
-        if (type === "+") only.push(id);
+
+    let m;
+    while ((m = regex.exec(text)) !== null) {
+        if (m[1] === "-") ignore.add(m[2]);
+        if (m[1] === "+") only.add(m[2]);
     }
 
     return {
@@ -223,55 +96,134 @@ function parseSelectors(text) {
     };
 }
 
+// ========= Embed de Progresso =========
+async function updateProgressEmbed() {
+    if (!state.progressMessage) return;
 
-// ===========================================
-// Comando principal
-// ===========================================
+    const embed = new EmbedBuilder()
+        .setTitle("📨 Envio em progresso")
+        .setColor("#00AEEF")
+        .addFields(
+            { name: "Enviadas", value: `${state.stats.success}`, inline: true },
+            { name: "Falhas", value: `${state.stats.fail}`, inline: true },
+            { name: "DM fechada", value: `${state.stats.closed}`, inline: true },
+            { name: "Restando", value: `${state.queue.length}`, inline: true }
+        )
+        .setTimestamp();
+
+    try {
+        await state.progressMessage.edit({ embeds: [embed] });
+    } catch {}
+}
+
+function startProgressUpdater() {
+    setInterval(() => {
+        if (!state.active) return;
+        updateProgressEmbed();
+    }, PROGRESS_UPDATE_INTERVAL);
+}
+
+// ========= WORKERS =========
+async function workerLoop(id) {
+    console.log(`Worker ${id} iniciado.`);
+
+    while (state.active && state.queue.length > 0) {
+        const userId = state.queue.shift();
+        saveState(state);
+
+        const guild = await client.guilds.fetch(state.guildId);
+        const member = await guild.members.fetch(userId).catch(() => null);
+
+        if (!member || member.user.bot) continue;
+
+        const payload = {};
+        if (state.text) payload.content = state.text;
+        if (state.attachments.length > 0) payload.files = state.attachments;
+
+        const result = await sendDM(member, payload);
+
+        if (result === true) state.stats.success++;
+        else if (result === "closed") state.stats.closed++;
+        else state.stats.fail++;
+
+        saveState(state);
+
+        await wait(DELAY_BASE);
+    }
+
+    console.log(`Worker ${id} finalizado.`);
+}
+
+function startWorkers() {
+    for (let i = 0; i < WORKERS; i++) workerLoop(i);
+}
+
+// ========= COMANDO PRINCIPAL =========
 client.on("messageCreate", async (message) => {
     if (!message.content.startsWith("!announce") &&
-        !message.content.startsWith("!announcefor")) return;
+        !message.content.startsWith("!announcefor"))
+        return;
 
     if (message.author.bot) return;
 
-    const isFor = message.content.startsWith("!announcefor");
+    const mode = message.content.startsWith("!announcefor") ? "for" : "announce";
 
     const raw = message.content
         .replace("!announcefor", "")
         .replace("!announce", "")
         .trim();
 
-    const { cleaned, ignore, only } = parseSelectors(raw);
+    const parsed = parseSelectors(raw);
 
     const attachments = [...message.attachments.values()].map(a => a.url);
 
+    if (!parsed.cleaned && attachments.length === 0)
+        return message.reply("Use `!announce texto -{id}` ou `!announcefor texto +{id}`");
+
+    // Criar nova fila
     const guild = message.guild;
+    await guild.members.fetch();
 
-    await message.reply("📢 Preparando envio…");
+    let queue = [];
 
-    const data = {
-        active: false,
+    guild.members.cache.forEach(m => {
+        if (m.user.bot) return;
+
+        if (mode === "announce" && parsed.ignore.has(m.id)) return;
+        if (mode === "for" && !parsed.only.has(m.id)) return;
+
+        queue.push(m.id);
+    });
+
+    // Estado persistente
+    state = {
+        active: true,
         guildId: guild.id,
-        message: cleaned,
+        text: parsed.cleaned,
+        mode,
         attachments,
-        ignore,
-        only,
-        after: null,
-        queue: [],
-        sent: [],
-        failed: []
+        ignore: [...parsed.ignore],
+        only: [...parsed.only],
+        queue,
+        stats: { success: 0, fail: 0, closed: 0 },
+        progressMessage: null
     };
 
-    saveQueue(data);
+    saveState(state);
 
-    producer(guild, data);
+    // Envia a mensagem de progresso
+    const msg = await message.reply("📢 Preparando envio…");
+    state.progressMessage = msg;
+    saveState(state);
 
-    for (let i = 0; i < WORKERS; i++) {
-        worker(i);
-    }
+    await wait(800);
 
-    message.reply("🔄 Envio iniciado em modo seguro (Railway-Proof).");
+    await msg.edit("🔄 Envio iniciado em modo seguro (Railway-Proof).");
+
+    // INICIA TUDO
+    startWorkers();
+    startProgressUpdater();
 });
 
-
-// ===========================================
+// ========= LOGIN =========
 client.login(process.env.DISCORD_TOKEN);
