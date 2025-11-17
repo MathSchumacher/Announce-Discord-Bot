@@ -136,23 +136,51 @@ async function workerLoop(id) {
 
         if (!member || member.user.bot) continue;
 
-        const payload = {};
-        if (state.text) payload.content = state.text;
-        if (state.attachments.length > 0) payload.files = state.attachments;
+        // =====================================================
+        // 🔥 NOVO SISTEMA: Enviar imagens primeiro, texto depois
+        // =====================================================
 
-        const result = await sendDM(member, payload);
+        let result;
 
-        if (result === true) state.stats.success++;
-        else if (result === "closed") state.stats.closed++;
-        else state.stats.fail++;
+        // --- 1) Enviar IMAGENS (se houver) ---
+        if (state.attachments.length > 0) {
+            const imgPayload = { files: state.attachments };
+
+            result = await sendDM(member, imgPayload);
+
+            if (result === "closed") {
+                state.stats.closed++;
+                saveState(state);
+                continue;
+            }
+            if (result !== true) state.stats.fail++;
+        }
+
+        // --- 2) Enviar TEXTO (se houver) ---
+        if (state.text) {
+            const textPayload = { content: state.text };
+
+            const result2 = await sendDM(member, textPayload);
+
+            if (result2 === true) {
+                state.stats.success++;
+            } else if (result2 === "closed") {
+                state.stats.closed++;
+            } else {
+                state.stats.fail++;
+            }
+        } else {
+            // Caso só tivesse imagem e deu certo:
+            if (result === true) state.stats.success++;
+        }
 
         saveState(state);
-
         await wait(DELAY_BASE);
     }
 
     console.log(`Worker ${id} finalizado.`);
 }
+
 
 function startWorkers() {
     for (let i = 0; i < WORKERS; i++) workerLoop(i);
