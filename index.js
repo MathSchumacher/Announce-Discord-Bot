@@ -104,7 +104,7 @@ function saveState(s) {
                 text: s.text || "",
                 attachments: Array.isArray(s.attachments) ? s.attachments : [],
                 ignore: Array.isArray(s.ignore) ? s.ignore : [],
-                only: Array.isArray(s.only) ? s.only : [],
+                only: Array.isArray(s.only) ? Array.from(s.only) : [],
                 queue: Array.isArray(s.queue) ? s.queue : [],
                 currentRunStats: s.currentRunStats || { success: 0, fail: 0, closed: 0 },
                 progressMessageRef: (s.progressMessageRef && s.progressMessageRef.channelId && s.progressMessageRef.messageId) ? s.progressMessageRef : null,
@@ -523,7 +523,7 @@ async function finalizeSending() {
 
 // === Commands and flow ===
 client.on("messageCreate", async (message) => {
-    try {
+    try { 
         if (message.author.bot || !message.guild) return;
         
         const guildId = message.guild.id;
@@ -687,6 +687,7 @@ client.on("messageCreate", async (message) => {
                  });
                  message.reply(`🗑️ Fila anterior de **${totalRemaining}** membros foi descartada. Iniciando nova campanha.`);
             }
+        }
 
 
         // 2. PREPARAÇÃO DA FILA (ANNOUNCE & RESUME)
@@ -774,7 +775,9 @@ client.on("messageCreate", async (message) => {
                 s.currentRunStats = { success: 0, fail: 0, closed: 0 }; 
             });
 
-        }
+        } // <--- Fechamento do bloco IF/ELSE IF (Announce/Resume)
+        // OBS: Se nenhum dos comandos for Announce ou Resume, o código não prossegue
+        // a partir daqui, pois ele teria retornado no IF inicial.
 
         if (queue.length === 0) return message.reply("A fila de envio está vazia.");
 
@@ -805,11 +808,11 @@ client.on("messageCreate", async (message) => {
         startProgressUpdater();
         startWorkerSafe();
 
-    } catch (err) {
+    } catch (err) { 
         console.error("Erro em messageCreate:", err);
         message.reply("❌ Ocorreu um erro interno ao iniciar o envio.");
     }
-});
+}); // <-- Fechamento FINAL do client.on
 
 // === Ready / auto-resume ===
 client.on("ready", async () => {
