@@ -5,11 +5,17 @@ const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require("discord.j
 
 // ===== CONFIG =====
 const WORKERS = 1; 
-const DELAY_BASE = 2500;
 const RETRY_LIMIT = 3;
 const STATE_FILE = path.resolve(__dirname, "state.json");
 const SENT_FILE = path.resolve(__dirname, "sent.txt");
 const PROGRESS_UPDATE_INTERVAL = 5000;
+
+// === CONFIGURAÇÕES DE SEGURANÇA (ANTI-QUARENTENA) ===
+// NOVO DELAY: 10 segundos (base) + 0 a 10 segundos (aleatório) = 10s a 20s por DM
+const DELAY_BASE_MS = 10000; 
+const DELAY_RANDOM_MS = 10000; 
+const BATCH_SIZE = 25; // O bot enviará no máximo 25 DMs em um lote
+const BATCH_PAUSE_MINUTES = 10; // Pausa de 10 minutos entre os lotes
 
 // === CONFIG DE SEGURANÇA ANTIS-SPAM (COOLDOWN DINÂMICO) ===
 const GLOBAL_COOLDOWN_MIN_HOURS = 6; // Mínimo de descanso absoluto
@@ -24,36 +30,32 @@ function loadState() {
     const s = JSON.parse(raw);
     return Object.assign({
       active: false,
-      guildId: null,
       text: "",
       attachments: [],
       ignore: [],
       only: [],
       queue: [],
-      stats: { success: 0, fail: 0, closed: 0 },
+      currentRunStats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null,
       mode: "announce",
-      quarantine: false, // Flag global de quarentena
-      currentAnnounceGuildId: null, // ID da guild que está sendo anunciada no momento
-      currentRunStats: { success: 0, fail: 0, closed: 0 }, // Estatísticas da execução atual
-      guildData: {} // NOVO: Dados específicos por guild (cooldown, stats cumulativos)
+      quarantine: false,
+      currentAnnounceGuildId: null,
+      guildData: {} 
     }, s);
   } catch {
     return {
       active: false,
-      guildId: null,
       text: "",
       attachments: [],
       ignore: [],
       only: [],
       queue: [],
-      stats: { success: 0, fail: 0, closed: 0 },
+      currentRunStats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null,
       mode: "announce",
-      quarantine: false, // Flag global de quarentena
-      currentAnnounceGuildId: null,
-      currentRunStats: { success: 0, fail: 0, closed: 0 },
-      guildData: {}
+      quarantine: false,
+      currentAnnounceGuildId: null,
+      guildData: {}
     };
   }
 }
@@ -72,7 +74,7 @@ function saveState(s) {
       progressMessageRef: (s.progressMessageRef && s.progressMessageRef.channelId && s.progressMessageRef.messageId) ? s.progressMessageRef : null,
       mode: s.mode || "announce",
       quarantine: !!s.quarantine,
-      guildData: s.guildData || {}
+      guildData: s.guildData || {}
     };
     fs.writeFileSync(STATE_FILE, JSON.stringify(copy, null, 2));
   } catch (e) {
@@ -119,6 +121,15 @@ function parseSelectors(text) {
   return { cleaned: text.replace(regex, "").trim(), ignore, only };
 }
 
+// Garante que cada DM tenha um hash ligeiramente diferente, evitando detecção de spam de conteúdo idêntico.
+function getVariedText(baseText) {
+  if (!baseText || baseText.length === 0) return "";
+  // Adiciona 1 a 3 caracteres de espaço de largura zero (\u200B) no final.
+  const zeroWidthSpace = "\u200B";
+  const randomSuffix = Array(Math.floor(Math.random() * 3) + 1).fill(zeroWidthSpace).join('');
+  return baseText + randomSuffix;
+}
+
 // send DM with retry/backoff and quarantine detection
 async function sendDMToMember(memberOrUser, payload) {
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
@@ -148,7 +159,8 @@ async function sendDMToMember(memberOrUser, payload) {
       }
 
       if (err?.status === 429 || err?.statusCode === 429) {
-        const backoffMs = (2000 * attempt) + Math.floor(Math.random() * 1000);
+        // Penalidade adicional para 429 explícito
+        const backoffMs = (5000 * attempt) + Math.floor(Math.random() * 2000); 
         console.warn(`RATE LIMITED (429). Waiting ${backoffMs}ms. Attempt ${attempt}/${RETRY_LIMIT}`);
         await wait(backoffMs);
         continue;
@@ -217,6 +229,11 @@ function stopProgressUpdater() {
 async function workerLoop() {
   console.log("Worker iniciado.");
   try {
+    let messagesSentInBatch = 0;
+    
+    // Prepara o texto variado APENAS UMA VEZ para este lote.
+    const variedText = getVariedText(state.text); 
+
     while (state.active && state.queue && state.queue.length > 0) {
       const userId = state.queue[0];
 
@@ -239,32 +256,32 @@ async function workerLoop() {
       let imageOk = true;
       let textOk = true;
 
+      // 1. Envio de ANEXOS (Se existirem)
       if (state.attachments && state.attachments.length > 0) {
         const imgPayload = { files: state.attachments };
         const result = await sendDMToMember(user, imgPayload);
 
         if (!result.success) {
           imageOk = false;
+          // Se falhou por closed/quarantine, não tenta enviar o texto e avança.
           if (result.reason === "closed") {
             modifyStateAndSave(s => s.currentRunStats.closed++);
-            await wait(DELAY_BASE);
-            continue;
           } else if (result.reason === "quarantine") {
-            console.error("Quarantine detected; stopping worker loop.");
-            modifyStateAndSave(s => s.queue.unshift(userId));
+            modifyStateAndSave(s => s.queue.unshift(userId)); 
             break;
           } else {
             modifyStateAndSave(s => s.currentRunStats.fail++);
-            await wait(DELAY_BASE);
-            continue;
           }
+          // Já faz o delay e continua para o próximo, não passa para o texto.
+          await wait(DELAY_BASE_MS + Math.floor(Math.random() * DELAY_RANDOM_MS));
+          continue;
         }
       }
 
+      // 2. Envio de TEXTO (Se existir e o envio de anexo não falhou de forma terminal)
       if (state.text) {
-        if (!imageOk && result.reason === "closed") continue; 
-        
-        const textPayload = { content: state.text };
+        // Usa o texto variado
+        const textPayload = { content: variedText };
         const result = await sendDMToMember(user, textPayload);
 
         if (!result.success) {
@@ -273,7 +290,7 @@ async function workerLoop() {
             modifyStateAndSave(s => s.currentRunStats.closed++);
           } else if (result.reason === "quarantine") {
             console.error("Quarantine detected on text send; stopping worker loop.");
-            modifyStateAndSave(s => s.queue.unshift(userId)); // Coloca de volta na fila para tentar depois
+            modifyStateAndSave(s => s.queue.unshift(userId)); 
             break;
           } else {
             modifyStateAndSave(s => s.currentRunStats.fail++);
@@ -292,7 +309,19 @@ async function workerLoop() {
       }
 
       updateProgressEmbed().catch(() => {});
-      await wait(DELAY_BASE + Math.floor(Math.random() * 1500));
+      
+      // 3. Lógica de delay e pausa de lote
+      messagesSentInBatch++;
+      if (messagesSentInBatch >= BATCH_SIZE && state.queue.length > 0) {
+        console.log(`PAUSA DE LOTE: ${messagesSentInBatch} DMs enviadas. Pausando por ${BATCH_PAUSE_MINUTES} minutos.`);
+        await updateProgressEmbed();
+        await wait(BATCH_PAUSE_MINUTES * 60 * 1000);
+        messagesSentInBatch = 0;
+        console.log("Retomando envio após a pausa.");
+      } else {
+        // Delay normal entre mensagens
+        await wait(DELAY_BASE_MS + Math.floor(Math.random() * DELAY_RANDOM_MS));
+      }
     }
   } catch (err) {
     console.error("Erro no worker:", err);
@@ -318,7 +347,6 @@ async function finalizeSending() {
   progressMessageRuntime = null;
 
   const currentAnnounceGuildId = state.currentAnnounceGuildId;
-  const guildSpecificData = state.guildData[currentAnnounceGuildId] || { lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0 };
   const chRef = state.progressMessageRef;
   const { success, fail, closed } = state.currentRunStats;
   const totalSent = success + fail + closed;
@@ -342,7 +370,7 @@ async function finalizeSending() {
       { name: "DM Fechada", value: `${closed}`, inline: true }
     )
     .setTimestamp();
- 
+ 
   if (state.quarantine) {
     embed.addFields({ name: "⚠️ QUARENTENA ATIVADA", value: "Seu bot foi marcado pelo sistema anti-spam do Discord (app-quarantine). Todos os envios foram interrompidos. Abra um ticket/appeal: https://dis.gd/app-quarantine", inline: false });
   }
@@ -376,26 +404,24 @@ async function finalizeSending() {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
     
-    // === Lógica de Cooldown na Finalização ===
-    const wasQueueEmpty = state.queue.length === 0; // Verifica se a fila foi esvaziada
-    
-    // Atualiza o timestamp APENAS se o envio terminou (fila vazia) e não foi interrompido por quarentena
-    if (!state.quarantine && wasQueueEmpty && totalSent > 0) {
-        modifyStateAndSave(s => {
-            // Atualiza as estatísticas cumulativas e o cooldown para a guild específica
-            s.guildData[currentAnnounceGuildId] = s.guildData[currentAnnounceGuildId] || { lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0 };
-            s.guildData[currentAnnounceGuildId].lastAnnounceTime = Date.now();
-            s.guildData[currentAnnounceGuildId].totalSuccess += success;
-            s.guildData[currentAnnounceGuildId].totalFail += fail;
-            s.guildData[currentAnnounceGuildId].totalClosed += closed;
+    // === Lógica de Cooldown na Finalização ===
+    const wasQueueEmpty = state.queue.length === 0;
+    
+    if (currentAnnounceGuildId && !state.quarantine && wasQueueEmpty && totalSent > 0) {
+        modifyStateAndSave(s => {
+            s.guildData[currentAnnounceGuildId] = s.guildData[currentAnnounceGuildId] || { lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0 };
+            s.guildData[currentAnnounceGuildId].lastAnnounceTime = Date.now();
+            // Estatísticas para o próximo cálculo de cooldown
+            s.guildData[currentAnnounceGuildId].totalSuccess = success;
+            s.guildData[currentAnnounceGuildId].totalFail = fail;
+            s.guildData[currentAnnounceGuildId].totalClosed = closed;
 
-            s.active = false;
-            s.currentAnnounceGuildId = null; // Limpa a guild ativa
-        });
-    } else {
-        // Se houve quarentena ou a fila não foi esvaziada, apenas desativa a flag 'active'
-        modifyStateAndSave(s => s.active = false);
-    }
+            s.active = false;
+            s.currentAnnounceGuildId = null;
+        });
+    } else {
+        modifyStateAndSave(s => s.active = false);
+    }
   }
 }
 
@@ -403,12 +429,11 @@ async function finalizeSending() {
 client.on("messageCreate", async (message) => {
   try {
     if (!message.content.startsWith("!announce") && !message.content.startsWith("!announcefor")) return;
-    if (message.author.bot) return;
+    if (message.author.bot || !message.guild) return;
 
-    // 1. Prevenção de Cooldown Global Dinâmico
+    // 1. Prevenção de Cooldown Global Dinâmico (Por Guild)
     const guildId = message.guild.id;
 
-    // Garante que a guild tenha um registro no guildData
     if (!state.guildData[guildId]) {
       modifyStateAndSave(s => s.guildData[guildId] = { lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0 });
     }
@@ -417,42 +442,38 @@ client.on("messageCreate", async (message) => {
     const now = Date.now();
     const timeSinceLastAnnounce = now - guildSpecificData.lastAnnounceTime;
     
-    // O total da última campanha é a soma de todos os resultados
-    const lastCampaignSize = guildSpecificData.totalSuccess + guildSpecificData.totalClosed + guildSpecificData.totalFail;
-    
-    // Se não houve envios anteriores, o cooldown é apenas o mínimo global
-    // Caso contrário, usa a penalidade baseada no tamanho da última campanha
-    // Calcula o Cooldown Total Necessário (mínimo de 6h ou penalidade do último envio)
-    let requiredCooldownMs = GLOBAL_COOLDOWN_MIN_MS;
-    if (lastCampaignSize > 0) {
-        requiredCooldownMs = Math.max(
-            GLOBAL_COOLDOWN_MIN_MS, 
-            lastCampaignSize * COOLDOWN_PENALTY_MS_PER_USER
-        );
-    }
+    // Usa o resultado da última campanha (armazenado no guildData após a última finalização)
+    const lastCampaignSize = guildSpecificData.totalSuccess + guildSpecificData.totalClosed + guildSpecificData.totalFail;
+    
+    let requiredCooldownMs = GLOBAL_COOLDOWN_MIN_MS;
+    if (lastCampaignSize > 0) {
+        requiredCooldownMs = Math.max(
+            GLOBAL_COOLDOWN_MIN_MS, 
+            lastCampaignSize * COOLDOWN_PENALTY_MS_PER_USER
+        );
+    }
 
-    if (state.lastAnnounceTime !== 0 && timeSinceLastAnnounce < requiredCooldownMs) {
+    if (guildSpecificData.lastAnnounceTime !== 0 && timeSinceLastAnnounce < requiredCooldownMs) {
       const remainingTimeMs = requiredCooldownMs - timeSinceLastAnnounce;
       
-      // Conversão para horas e minutos
       const remainingHours = Math.floor(remainingTimeMs / 3600000);
       const remainingMinutes = Math.ceil((remainingTimeMs % 3600000) / 60000);
       
-      let remainingDisplay = "";
-      if (remainingHours > 0) remainingDisplay += `${remainingHours} horas`;
-      if (remainingMinutes > 0) {
-          if (remainingDisplay) remainingDisplay += ` e `;
-          remainingDisplay += `${remainingMinutes} minutos`;
-      }
+      let remainingDisplay = "";
+      if (remainingHours > 0) remainingDisplay += `${remainingHours} horas`;
+      if (remainingMinutes > 0) {
+          if (remainingDisplay) remainingDisplay += ` e `;
+          remainingDisplay += `${remainingMinutes} minutos`;
+      }
 
-      const penaltyDurationHours = (requiredCooldownMs / 3600000).toFixed(1);
-      
-      return message.reply(`⛔ Não posso iniciar outro envio agora. O último envio de **${lastCampaignSize} DMs** exige um descanso de **${penaltyDurationHours} horas** (para evitar banimento). Restam **${remainingDisplay}**.`);
+      const penaltyDurationHours = (requiredCooldownMs / 3600000).toFixed(1);
+      
+      return message.reply(`⛔ Cooldown Ativo. O último envio de **${lastCampaignSize} DMs** exige um descanso de **${penaltyDurationHours} horas** (anti-spam). Restam **${remainingDisplay}**.`);
     }
 
-    // prevent starting a new run if active
+    // 2. Prevenção de Múltiplas Execuções Concorrentes (Global)
     if (state.active) {
-      return message.reply("❗ Já existe um envio em andamento. Aguarde ou reinicie o bot.");
+      return message.reply("❗ Já existe um envio em andamento **GLOBALMENTE**. Aguarde a conclusão da tarefa atual.");
     }
 
     const mode = message.content.startsWith("!announcefor") ? "for" : "announce";
@@ -462,54 +483,57 @@ client.on("messageCreate", async (message) => {
     const attachments = [...message.attachments.values()].map(a => a.url);
 
     if (!parsed.cleaned && attachments.length === 0) {
-      return message.reply("Use `!announce texto -{id}` para ignorar, ou `!announcefor texto +{id}` para enviar apenas para IDs específicos.");
+      return message.reply("O comando precisa de texto ou anexo. Use `!announce texto -{id}` ou `!announcefor texto +{id}`.");
     }
 
     const guild = message.guild;
-    if (!guild) return message.reply("Comando deve ser usado dentro de um servidor.");
-
     try { await guild.members.fetch(); } catch (e) { console.warn("guild.members.fetch() falhou (intents?). Continuando com cache."); }
 
     const queue = [];
     guild.members.cache.forEach(m => {
-      if (!m || !m.user) return;
-      if (m.user.bot) return;
+      if (!m || !m.user || m.user.bot) return;
       if (mode === "announce" && parsed.ignore.has(m.id)) return;
       if (mode === "for" && !parsed.only.has(m.id)) return;
       queue.push(m.id);
     });
+    
+    if (queue.length === 0) {
+        return message.reply("A fila de envio está vazia após aplicar os filtros.");
+    }
 
     if (fs.existsSync(SENT_FILE)) {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
 
+    // Inicia o estado da execução
     state = {
       active: true,
-      currentAnnounceGuildId: guild.id, // Define a guild que está sendo processada
+      currentAnnounceGuildId: guild.id,
       text: parsed.cleaned,
       mode,
       attachments,
       ignore: [...parsed.ignore],
       only: [...parsed.only],
       queue,
-      currentRunStats: { success: 0, fail: 0, closed: 0 }, // Zera as stats para a execução atual
+      currentRunStats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null,
       quarantine: false,
-      guildData: state.guildData // Mantém os dados das guilds
+      guildData: state.guildData
     };
     saveState(state);
 
-    const progressMsg = await message.reply("📢 Preparando envio…");
+    const progressMsg = await message.reply(`📢 Preparando envio para **${queue.length}** membros...`);
     modifyStateAndSave(s => s.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id });
 
     await wait(700);
-    try { await progressMsg.edit("🔄 Envio iniciado em modo seguro."); } catch (e) {}
+    try { await progressMsg.edit("🔄 Envio iniciado em modo seguro (1 DM a cada 10s-20s)."); } catch (e) {}
 
     startProgressUpdater();
     startWorkerSafe();
 
   } catch (err) {
     console.error("Erro em messageCreate:", err);
+    message.reply("❌ Ocorreu um erro interno ao iniciar o envio.");
   }
 });
 
