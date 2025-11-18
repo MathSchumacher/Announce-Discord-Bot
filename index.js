@@ -11,16 +11,16 @@ const SENT_FILE = path.resolve(__dirname, "sent.txt");
 const PROGRESS_UPDATE_INTERVAL = 5000;
 
 // === CONFIGURAÇÕES DE SEGURANÇA (ANTI-QUARENTENA) ===
-// NOVO DELAY: 10 segundos (base) + 0 a 10 segundos (aleatório) = 10s a 20s por DM
+// DELAY: 10 segundos (base) + 0 a 10 segundos (aleatório) = 10s a 20s por DM
 const DELAY_BASE_MS = 10000; 
 const DELAY_RANDOM_MS = 10000; 
 const BATCH_SIZE = 25; // O bot enviará no máximo 25 DMs em um lote
 const BATCH_PAUSE_MINUTES = 10; // Pausa de 10 minutos entre os lotes
 
 // === CONFIG DE SEGURANÇA ANTIS-SPAM (COOLDOWN DINÂMICO) ===
-const GLOBAL_COOLDOWN_MIN_HOURS = 6; // Mínimo de descanso absoluto
+const GLOBAL_COOLDOWN_MIN_HOURS = 6; 
 const GLOBAL_COOLDOWN_MIN_MS = GLOBAL_COOLDOWN_MIN_HOURS * 3600000;
-const COOLDOWN_PENALTY_MS_PER_USER = 1000; // 1 segundo de penalidade por usuário enviado
+const COOLDOWN_PENALTY_MS_PER_USER = 1000; 
 // ===================
 
 // === State persistence ===
@@ -101,12 +101,10 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// runtime refs (not persisted)
 let progressMessageRuntime = null;
 let progressUpdaterHandle = null;
 let workerRunning = false;
 
-// === utils ===
 const wait = ms => new Promise(res => setTimeout(res, ms));
 
 function parseSelectors(text) {
@@ -121,24 +119,14 @@ function parseSelectors(text) {
   return { cleaned: text.replace(regex, "").trim(), ignore, only };
 }
 
-// Garante que cada DM tenha um hash ligeiramente diferente, evitando detecção de spam de conteúdo idêntico.
+// Função de variação (agora usada APENAS se não houver link)
 function getVariedText(baseText) {
-  if (!baseText || baseText.length === 0) return "";
-
-  // Regex para detectar se o texto termina com uma URL.
-  const urlRegex = /(https?:\/\/[^\s]+)$/;
-  const match = baseText.match(urlRegex);
-
-  // Adiciona 1 a 3 caracteres de espaço de largura zero (\u200B).
-  const zeroWidthSpace = "\u200B";
-  const randomSuffix = Array(Math.floor(Math.random() * 3) + 1).fill(zeroWidthSpace).join('');
-
-  // Se o texto terminar com uma URL, adiciona um espaço antes do caractere invisível para não quebrar o link.
-  // Caso contrário, apenas adiciona o caractere invisível no final.
-  return match ? `${baseText} ${randomSuffix}` : `${baseText}${randomSuffix}`;
+  if (!baseText || baseText.length === 0) return "";
+  const zeroWidthSpace = "\u200B";
+  const randomSuffix = Array(Math.floor(Math.random() * 3) + 1).fill(zeroWidthSpace).join('');
+  return baseText + randomSuffix;
 }
 
-// send DM with retry/backoff and quarantine detection
 async function sendDMToMember(memberOrUser, payload) {
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     try {
@@ -153,7 +141,7 @@ async function sendDMToMember(memberOrUser, payload) {
       }
 
       if (errString.includes("app-quarantine") || errString.includes("flagged by our anti-spam system")) {
-        console.error(`QUARANTINE DETECTED for app. Stopping all sends. Appeal at https://dis.gd/app-quarantine`);
+        console.error(`QUARANTINE DETECTED.`);
         modifyStateAndSave(s => s.quarantine = true);
         return { success: false, reason: "quarantine" };
       }
@@ -161,33 +149,28 @@ async function sendDMToMember(memberOrUser, payload) {
       const retryAfter = err?.retry_after || err?.retryAfter;
       if (retryAfter) {
         const waitMs = Number(retryAfter) * 1000 + 1500;
-        console.warn(`RATE LIMITED (retry_after). Waiting ${waitMs}ms. Attempt ${attempt}/${RETRY_LIMIT}`);
+        console.warn(`RATE LIMITED (retry_after). Waiting ${waitMs}ms.`);
         await wait(waitMs);
         continue;
       }
 
       if (err?.status === 429 || err?.statusCode === 429) {
-        // Penalidade adicional para 429 explícito
         const backoffMs = (5000 * attempt) + Math.floor(Math.random() * 2000); 
-        console.warn(`RATE LIMITED (429). Waiting ${backoffMs}ms. Attempt ${attempt}/${RETRY_LIMIT}`);
+        console.warn(`RATE LIMITED (429). Waiting ${backoffMs}ms.`);
         await wait(backoffMs);
         continue;
       }
 
-      // Other errors
       const backoffMs = 1500 * attempt;
-      console.error(`Failed to send DM to ${memberOrUser.id} (Attempt ${attempt}/${RETRY_LIMIT}): ${errString}. Retrying in ${backoffMs}ms.`);
+      console.error(`Failed to send DM to ${memberOrUser.id}. Retrying in ${backoffMs}ms.`);
       await wait(backoffMs);
     }
   }
-  console.error(`Failed to send DM to ${memberOrUser.id} after ${RETRY_LIMIT} attempts.`);
   return { success: false, reason: "fail" };
 }
 
-// === Progress embed utils ===
 async function updateProgressEmbed() {
   if (!state.progressMessageRef) return;
-  
   let msg = progressMessageRuntime;
   if (!msg) {
     try {
@@ -195,12 +178,9 @@ async function updateProgressEmbed() {
       if (!ch || !ch.isTextBased()) return;
       msg = await ch.messages.fetch(state.progressMessageRef.messageId).catch(() => null);
       progressMessageRuntime = msg;
-    } catch (e) {
-      return;
-    }
+    } catch (e) { return; }
   }
   if (!msg) return;
-
   try {
     const embed = new EmbedBuilder()
       .setTitle("📨 Envio em progresso")
@@ -213,9 +193,7 @@ async function updateProgressEmbed() {
       )
       .setTimestamp();
     await msg.edit({ embeds: [embed] }).catch(() => {});
-  } catch (e) {
-    // Erros de edição (ex: mensagem foi apagada)
-  }
+  } catch (e) { }
 }
 
 function startProgressUpdater() {
@@ -239,9 +217,6 @@ async function workerLoop() {
   try {
     let messagesSentInBatch = 0;
     
-    // Prepara o texto variado APENAS UMA VEZ para este lote.
-    const variedText = getVariedText(state.text); 
-
     while (state.active && state.queue && state.queue.length > 0) {
       const userId = state.queue[0];
 
@@ -249,9 +224,7 @@ async function workerLoop() {
       if (!user) {
         try {
           user = await client.users.fetch(userId).catch(() => null);
-        } catch {
-          user = null;
-        }
+        } catch { user = null; }
       }
       
       if (!user || user.bot) {
@@ -264,14 +237,13 @@ async function workerLoop() {
       let imageOk = true;
       let textOk = true;
 
-      // 1. Envio de ANEXOS (Se existirem)
+      // 1. Envio de ANEXOS
       if (state.attachments && state.attachments.length > 0) {
         const imgPayload = { files: state.attachments };
         const result = await sendDMToMember(user, imgPayload);
 
         if (!result.success) {
           imageOk = false;
-          // Se falhou por closed/quarantine, não tenta enviar o texto e avança.
           if (result.reason === "closed") {
             modifyStateAndSave(s => s.currentRunStats.closed++);
           } else if (result.reason === "quarantine") {
@@ -280,16 +252,27 @@ async function workerLoop() {
           } else {
             modifyStateAndSave(s => s.currentRunStats.fail++);
           }
-          // Já faz o delay e continua para o próximo, não passa para o texto.
           await wait(DELAY_BASE_MS + Math.floor(Math.random() * DELAY_RANDOM_MS));
           continue;
         }
       }
 
-      // 2. Envio de TEXTO (Se existir e o envio de anexo não falhou de forma terminal)
+      // 2. Envio de TEXTO
       if (state.text) {
-        // Usa o texto variado
-        const textPayload = { content: variedText };
+        let contentToSend = state.text;
+
+        // === CORREÇÃO CRÍTICA DO EMBED ===
+        // Verifica se o texto contem 'http'. 
+        // Se tiver link, NÃO adiciona variação, enviando PURO para garantir o embed.
+        if (contentToSend.includes("http")) {
+          // Mantém o texto original (limpo)
+        } else {
+          // Se NÃO tiver link, aplica a variação anti-spam
+          contentToSend = getVariedText(contentToSend);
+        }
+        // ------------------------------------
+
+        const textPayload = { content: contentToSend };
         const result = await sendDMToMember(user, textPayload);
 
         if (!result.success) {
@@ -297,7 +280,7 @@ async function workerLoop() {
           if (result.reason === "closed") {
             modifyStateAndSave(s => s.currentRunStats.closed++);
           } else if (result.reason === "quarantine") {
-            console.error("Quarantine detected on text send; stopping worker loop.");
+            console.error("Quarantine detected on text send.");
             modifyStateAndSave(s => s.queue.unshift(userId)); 
             break;
           } else {
@@ -310,10 +293,7 @@ async function workerLoop() {
 
       if (wasSuccess) {
         modifyStateAndSave(s => s.currentRunStats.success++);
-        
-        fs.appendFile(SENT_FILE, `${userId}\n`, (err) => {
-          if (err) console.error("Erro ao escrever sent.txt:", err);
-        });
+        fs.appendFile(SENT_FILE, `${userId}\n`, (err) => {});
       }
 
       updateProgressEmbed().catch(() => {});
@@ -321,13 +301,12 @@ async function workerLoop() {
       // 3. Lógica de delay e pausa de lote
       messagesSentInBatch++;
       if (messagesSentInBatch >= BATCH_SIZE && state.queue.length > 0) {
-        console.log(`PAUSA DE LOTE: ${messagesSentInBatch} DMs enviadas. Pausando por ${BATCH_PAUSE_MINUTES} minutos.`);
+        console.log(`PAUSA DE LOTE: Pausando por ${BATCH_PAUSE_MINUTES} minutos.`);
         await updateProgressEmbed();
         await wait(BATCH_PAUSE_MINUTES * 60 * 1000);
         messagesSentInBatch = 0;
-        console.log("Retomando envio após a pausa.");
+        console.log("Retomando envio.");
       } else {
-        // Delay normal entre mensagens
         await wait(DELAY_BASE_MS + Math.floor(Math.random() * DELAY_RANDOM_MS));
       }
     }
@@ -341,15 +320,12 @@ async function workerLoop() {
 }
 
 function startWorkerSafe() {
-  if (workerRunning) {
-    console.log("Worker já rodando — ignorando start.");
-    return;
-  }
+  if (workerRunning) return;
   workerRunning = true;
   workerLoop().catch(err => { console.error("Worker exception:", err); workerRunning = false; });
 }
 
-// === Finalize logic: send embed + maybe sent.txt ===
+// === Finalize logic ===
 async function finalizeSending() {
   stopProgressUpdater();
   progressMessageRuntime = null;
@@ -364,9 +340,7 @@ async function finalizeSending() {
   if (fail > 0 && hasSentFile) {
     attachments.push({ attachment: SENT_FILE, name: "sucessos.txt" });
   } else {
-    if (hasSentFile) {
-      try { fs.unlinkSync(SENT_FILE); } catch (e) {}
-    }
+    if (hasSentFile) { try { fs.unlinkSync(SENT_FILE); } catch (e) {} }
   }
 
   const embed = new EmbedBuilder()
@@ -380,50 +354,34 @@ async function finalizeSending() {
     .setTimestamp();
  
   if (state.quarantine) {
-    embed.addFields({ name: "⚠️ QUARENTENA ATIVADA", value: "Seu bot foi marcado pelo sistema anti-spam do Discord (app-quarantine). Todos os envios foram interrompidos. Abra um ticket/appeal: https://dis.gd/app-quarantine", inline: false });
+    embed.addFields({ name: "⚠️ QUARENTENA", value: "Sistema interrompido por proteção.", inline: false });
   }
   
-  const content = fail > 0 ? "⚠️ Houve falhas. A lista de **sucessos** está em anexo." : (state.quarantine ? "❗ Envio interrompido por quarentena. Verifique o link no embed." : "✔️ Envio concluído com sucesso.");
+  const content = fail > 0 ? "⚠️ Houve falhas." : (state.quarantine ? "❗ Envio interrompido." : "✔️ Concluído.");
 
   try {
     if (chRef && chRef.channelId) {
       const ch = await client.channels.fetch(chRef.channelId).catch(() => null);
       if (ch && ch.isTextBased()) {
         const msg = await ch.messages.fetch(chRef.messageId).catch(() => null);
-        
         if (msg) {
-          await msg.edit({ content, embeds: [embed], files: attachments }).catch(async (e) => {
-            console.warn("Não foi possível editar mensagem de progresso, enviando novo resumo.", e);
-            await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
-          });
+          await msg.edit({ content, embeds: [embed], files: attachments }).catch(() => {});
         } else {
           await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
         }
-      } else {
-        console.warn("Canal de progresso não disponível para postar resumo final.");
       }
-    } else {
-      console.warn("Sem referência de progresso para postar resumo final.");
     }
-  } catch (e) {
-    console.error("Erro ao publicar resumo final:", e);
-  } finally {
-    if (fs.existsSync(SENT_FILE)) {
-      try { fs.unlinkSync(SENT_FILE); } catch (e) {}
-    }
-    
-    // === Lógica de Cooldown na Finalização ===
+  } catch (e) { console.error("Erro ao publicar resumo:", e); } 
+  finally {
+    if (fs.existsSync(SENT_FILE)) { try { fs.unlinkSync(SENT_FILE); } catch (e) {} }
     const wasQueueEmpty = state.queue.length === 0;
-    
     if (currentAnnounceGuildId && !state.quarantine && wasQueueEmpty && totalSent > 0) {
         modifyStateAndSave(s => {
             s.guildData[currentAnnounceGuildId] = s.guildData[currentAnnounceGuildId] || { lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0 };
             s.guildData[currentAnnounceGuildId].lastAnnounceTime = Date.now();
-            // Estatísticas para o próximo cálculo de cooldown
             s.guildData[currentAnnounceGuildId].totalSuccess = success;
             s.guildData[currentAnnounceGuildId].totalFail = fail;
             s.guildData[currentAnnounceGuildId].totalClosed = closed;
-
             s.active = false;
             s.currentAnnounceGuildId = null;
         });
@@ -433,13 +391,12 @@ async function finalizeSending() {
   }
 }
 
-// === Commands and flow ===
+// === Commands ===
 client.on("messageCreate", async (message) => {
   try {
     if (!message.content.startsWith("!announce") && !message.content.startsWith("!announcefor")) return;
     if (message.author.bot || !message.guild) return;
 
-    // 1. Prevenção de Cooldown Global Dinâmico (Por Guild)
     const guildId = message.guild.id;
 
     if (!state.guildData[guildId]) {
@@ -449,53 +406,35 @@ client.on("messageCreate", async (message) => {
 
     const now = Date.now();
     const timeSinceLastAnnounce = now - guildSpecificData.lastAnnounceTime;
-    
-    // Usa o resultado da última campanha (armazenado no guildData após a última finalização)
     const lastCampaignSize = guildSpecificData.totalSuccess + guildSpecificData.totalClosed + guildSpecificData.totalFail;
     
     let requiredCooldownMs = GLOBAL_COOLDOWN_MIN_MS;
     if (lastCampaignSize > 0) {
-        requiredCooldownMs = Math.max(
-            GLOBAL_COOLDOWN_MIN_MS, 
-            lastCampaignSize * COOLDOWN_PENALTY_MS_PER_USER
-        );
+        requiredCooldownMs = Math.max(GLOBAL_COOLDOWN_MIN_MS, lastCampaignSize * COOLDOWN_PENALTY_MS_PER_USER);
     }
 
     if (guildSpecificData.lastAnnounceTime !== 0 && timeSinceLastAnnounce < requiredCooldownMs) {
       const remainingTimeMs = requiredCooldownMs - timeSinceLastAnnounce;
-      
       const remainingHours = Math.floor(remainingTimeMs / 3600000);
       const remainingMinutes = Math.ceil((remainingTimeMs % 3600000) / 60000);
-      
       let remainingDisplay = "";
       if (remainingHours > 0) remainingDisplay += `${remainingHours} horas`;
-      if (remainingMinutes > 0) {
-          if (remainingDisplay) remainingDisplay += ` e `;
-          remainingDisplay += `${remainingMinutes} minutos`;
-      }
-
+      if (remainingMinutes > 0) { if (remainingDisplay) remainingDisplay += ` e `; remainingDisplay += `${remainingMinutes} minutos`; }
       const penaltyDurationHours = (requiredCooldownMs / 3600000).toFixed(1);
-      
-      return message.reply(`⛔ Cooldown Ativo. O último envio de **${lastCampaignSize} DMs** exige um descanso de **${penaltyDurationHours} horas** (anti-spam). Restam **${remainingDisplay}**.`);
+      return message.reply(`⛔ Cooldown Ativo. Último envio de **${lastCampaignSize} DMs** exige **${penaltyDurationHours}h** de pausa. Restam **${remainingDisplay}**.`);
     }
 
-    // 2. Prevenção de Múltiplas Execuções Concorrentes (Global)
-    if (state.active) {
-      return message.reply("❗ Já existe um envio em andamento **GLOBALMENTE**. Aguarde a conclusão da tarefa atual.");
-    }
+    if (state.active) return message.reply("❗ Já existe um envio em andamento.");
 
     const mode = message.content.startsWith("!announcefor") ? "for" : "announce";
     const raw = message.content.replace("!announcefor", "").replace("!announce", "").trim();
     const parsed = parseSelectors(raw);
-
     const attachments = [...message.attachments.values()].map(a => a.url);
 
-    if (!parsed.cleaned && attachments.length === 0) {
-      return message.reply("O comando precisa de texto ou anexo. Use `!announce texto -{id}` ou `!announcefor texto +{id}`.");
-    }
+    if (!parsed.cleaned && attachments.length === 0) return message.reply("Comando vazio.");
 
     const guild = message.guild;
-    try { await guild.members.fetch(); } catch (e) { console.warn("guild.members.fetch() falhou (intents?). Continuando com cache."); }
+    try { await guild.members.fetch(); } catch (e) { }
 
     const queue = [];
     guild.members.cache.forEach(m => {
@@ -505,15 +444,9 @@ client.on("messageCreate", async (message) => {
       queue.push(m.id);
     });
     
-    if (queue.length === 0) {
-        return message.reply("A fila de envio está vazia após aplicar os filtros.");
-    }
+    if (queue.length === 0) return message.reply("Fila vazia.");
+    if (fs.existsSync(SENT_FILE)) { try { fs.unlinkSync(SENT_FILE); } catch (e) {} }
 
-    if (fs.existsSync(SENT_FILE)) {
-      try { fs.unlinkSync(SENT_FILE); } catch (e) {}
-    }
-
-    // Inicia o estado da execução
     state = {
       active: true,
       currentAnnounceGuildId: guild.id,
@@ -530,53 +463,34 @@ client.on("messageCreate", async (message) => {
     };
     saveState(state);
 
-    const progressMsg = await message.reply(`📢 Preparando envio para **${queue.length}** membros...`);
+    const progressMsg = await message.reply(`📢 Iniciando envio para **${queue.length}** membros...`);
     modifyStateAndSave(s => s.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id });
 
     await wait(700);
-    try { await progressMsg.edit("🔄 Envio iniciado em modo seguro (1 DM a cada 10s-20s)."); } catch (e) {}
-
     startProgressUpdater();
     startWorkerSafe();
 
-  } catch (err) {
-    console.error("Erro em messageCreate:", err);
-    message.reply("❌ Ocorreu um erro interno ao iniciar o envio.");
-  }
+  } catch (err) { console.error("Erro:", err); }
 });
 
-// === Ready / auto-resume ===
 client.on("ready", async () => {
   console.log(`Bot online como ${client.user.tag}`);
-
-  if (state.progressMessageRef && state.progressMessageRef.channelId && state.progressMessageRef.messageId) {
+  if (state.progressMessageRef?.channelId) {
     try {
       const ch = await client.channels.fetch(state.progressMessageRef.channelId).catch(() => null);
       if (ch) {
         const msg = await ch.messages.fetch(state.progressMessageRef.messageId).catch(() => null);
         if (msg) progressMessageRuntime = msg;
       }
-    } catch (e) { /* ignore */ }
+    } catch (e) { }
   }
-
-  if (state.active && !workerRunning && state.queue && state.queue.length > 0) {
-    console.log("Retomando envio pendente...");
+  if (state.active && !workerRunning && state.queue.length > 0) {
     startProgressUpdater();
     startWorkerSafe();
   }
 });
 
-// ==== safety handlers ====
 process.on("unhandledRejection", (r) => console.error("UnhandledRejection:", r));
 process.on("uncaughtException", (err) => console.error("UncaughtException:", err));
-client.on("rateLimit", (info) => console.warn("Client rateLimit event:", info));
-
-// === login ===
-if (!process.env.DISCORD_TOKEN) {
-  console.error("DISCORD_TOKEN não encontrado.");
-  process.exit(1);
-}
-client.login(process.env.DISCORD_TOKEN).catch(err => {
-  console.error("Falha ao logar:", err);
-  process.exit(1);
-});
+if (!process.env.DISCORD_TOKEN) process.exit(1);
+client.login(process.env.DISCORD_TOKEN);
