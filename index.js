@@ -11,7 +11,7 @@ const SENT_FILE = path.resolve(__dirname, "sent.txt");
 const PROGRESS_UPDATE_INTERVAL = 5000;
 
 // === CONFIGURAÇÕES DE SEGURANÇA (ANTI-QUARENTENA) ===
-// DELAY: 10 segundos (base) + 0 a 10 segundos (aleatório) = 10s a 20s por DM
+// NOVO DELAY: 10 segundos (base) + 0 a 10 segundos (aleatório) = 10s a 20s por DM
 const DELAY_BASE_MS = 10000; 
 const DELAY_RANDOM_MS = 10000; 
 const BATCH_SIZE = 25; // O bot enviará no máximo 25 DMs em um lote
@@ -121,14 +121,24 @@ function parseSelectors(text) {
   return { cleaned: text.replace(regex, "").trim(), ignore, only };
 }
 
-// Garante que cada DM tenha um hash ligeiramente diferente
+// Garante que cada DM tenha um hash ligeiramente diferente, evitando detecção de spam de conteúdo idêntico.
 function getVariedText(baseText) {
-  if (!baseText || baseText.length === 0) return "";
-  const zeroWidthSpace = "\u200B";
-  const randomSuffix = Array(Math.floor(Math.random() * 3) + 1).fill(zeroWidthSpace).join('');
-  return baseText + randomSuffix;
+  if (!baseText || baseText.length === 0) return "";
+
+  // Regex para detectar se o texto termina com uma URL.
+  const urlRegex = /(https?:\/\/[^\s]+)$/;
+  const match = baseText.match(urlRegex);
+
+  // Adiciona 1 a 3 caracteres de espaço de largura zero (\u200B).
+  const zeroWidthSpace = "\u200B";
+  const randomSuffix = Array(Math.floor(Math.random() * 3) + 1).fill(zeroWidthSpace).join('');
+
+  // Se o texto terminar com uma URL, adiciona um espaço antes do caractere invisível para não quebrar o link.
+  // Caso contrário, apenas adiciona o caractere invisível no final.
+  return match ? `${baseText} ${randomSuffix}` : `${baseText}${randomSuffix}`;
 }
 
+// send DM with retry/backoff and quarantine detection
 async function sendDMToMember(memberOrUser, payload) {
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     try {
@@ -157,12 +167,14 @@ async function sendDMToMember(memberOrUser, payload) {
       }
 
       if (err?.status === 429 || err?.statusCode === 429) {
+        // Penalidade adicional para 429 explícito
         const backoffMs = (5000 * attempt) + Math.floor(Math.random() * 2000); 
         console.warn(`RATE LIMITED (429). Waiting ${backoffMs}ms. Attempt ${attempt}/${RETRY_LIMIT}`);
         await wait(backoffMs);
         continue;
       }
 
+      // Other errors
       const backoffMs = 1500 * attempt;
       console.error(`Failed to send DM to ${memberOrUser.id} (Attempt ${attempt}/${RETRY_LIMIT}): ${errString}. Retrying in ${backoffMs}ms.`);
       await wait(backoffMs);
@@ -172,6 +184,7 @@ async function sendDMToMember(memberOrUser, payload) {
   return { success: false, reason: "fail" };
 }
 
+// === Progress embed utils ===
 async function updateProgressEmbed() {
   if (!state.progressMessageRef) return;
   
@@ -201,7 +214,7 @@ async function updateProgressEmbed() {
       .setTimestamp();
     await msg.edit({ embeds: [embed] }).catch(() => {});
   } catch (e) {
-    // Erros de edição
+    // Erros de edição (ex: mensagem foi apagada)
   }
 }
 
@@ -226,6 +239,9 @@ async function workerLoop() {
   try {
     let messagesSentInBatch = 0;
     
+    // Prepara o texto variado APENAS UMA VEZ para este lote.
+    const variedText = getVariedText(state.text); 
+
     while (state.active && state.queue && state.queue.length > 0) {
       const userId = state.queue[0];
 
@@ -248,13 +264,14 @@ async function workerLoop() {
       let imageOk = true;
       let textOk = true;
 
-      // 1. Envio de ANEXOS
+      // 1. Envio de ANEXOS (Se existirem)
       if (state.attachments && state.attachments.length > 0) {
         const imgPayload = { files: state.attachments };
         const result = await sendDMToMember(user, imgPayload);
 
         if (!result.success) {
           imageOk = false;
+          // Se falhou por closed/quarantine, não tenta enviar o texto e avança.
           if (result.reason === "closed") {
             modifyStateAndSave(s => s.currentRunStats.closed++);
           } else if (result.reason === "quarantine") {
@@ -263,29 +280,16 @@ async function workerLoop() {
           } else {
             modifyStateAndSave(s => s.currentRunStats.fail++);
           }
+          // Já faz o delay e continua para o próximo, não passa para o texto.
           await wait(DELAY_BASE_MS + Math.floor(Math.random() * DELAY_RANDOM_MS));
           continue;
         }
       }
 
-      // 2. Envio de TEXTO
+      // 2. Envio de TEXTO (Se existir e o envio de anexo não falhou de forma terminal)
       if (state.text) {
-        
-        let contentToSend = state.text;
-
-        // === LÓGICA DE CORREÇÃO DO EMBED ===
-        // Detecta se o texto é APENAS uma URL (http ou https, sem espaços no meio)
-        // Isso cobre YouTube, Discord, G1, qualquer site.
-        const isLinkOnly = contentToSend.trim().match(/^https?:\/\/[^\s]+$/);
-
-        if (!isLinkOnly) {
-          // Se NÃO for apenas um link, adiciona variação para evitar spam
-          contentToSend = getVariedText(contentToSend);
-        }
-        // Se for apenas link, envia LIMPO para garantir o embed
-        // ------------------------------------
-
-        const textPayload = { content: contentToSend };
+        // Usa o texto variado
+        const textPayload = { content: variedText };
         const result = await sendDMToMember(user, textPayload);
 
         if (!result.success) {
@@ -345,7 +349,7 @@ function startWorkerSafe() {
   workerLoop().catch(err => { console.error("Worker exception:", err); workerRunning = false; });
 }
 
-// === Finalize logic ===
+// === Finalize logic: send embed + maybe sent.txt ===
 async function finalizeSending() {
   stopProgressUpdater();
   progressMessageRuntime = null;
@@ -376,22 +380,30 @@ async function finalizeSending() {
     .setTimestamp();
  
   if (state.quarantine) {
-    embed.addFields({ name: "⚠️ QUARENTENA ATIVADA", value: "Seu bot foi marcado pelo sistema anti-spam do Discord (app-quarantine).", inline: false });
+    embed.addFields({ name: "⚠️ QUARENTENA ATIVADA", value: "Seu bot foi marcado pelo sistema anti-spam do Discord (app-quarantine). Todos os envios foram interrompidos. Abra um ticket/appeal: https://dis.gd/app-quarantine", inline: false });
   }
   
-  const content = fail > 0 ? "⚠️ Houve falhas. Lista em anexo." : (state.quarantine ? "❗ Envio interrompido por quarentena." : "✔️ Envio concluído com sucesso.");
+  const content = fail > 0 ? "⚠️ Houve falhas. A lista de **sucessos** está em anexo." : (state.quarantine ? "❗ Envio interrompido por quarentena. Verifique o link no embed." : "✔️ Envio concluído com sucesso.");
 
   try {
     if (chRef && chRef.channelId) {
       const ch = await client.channels.fetch(chRef.channelId).catch(() => null);
       if (ch && ch.isTextBased()) {
         const msg = await ch.messages.fetch(chRef.messageId).catch(() => null);
+        
         if (msg) {
-          await msg.edit({ content, embeds: [embed], files: attachments }).catch(() => {});
+          await msg.edit({ content, embeds: [embed], files: attachments }).catch(async (e) => {
+            console.warn("Não foi possível editar mensagem de progresso, enviando novo resumo.", e);
+            await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
+          });
         } else {
           await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
         }
+      } else {
+        console.warn("Canal de progresso não disponível para postar resumo final.");
       }
+    } else {
+      console.warn("Sem referência de progresso para postar resumo final.");
     }
   } catch (e) {
     console.error("Erro ao publicar resumo final:", e);
@@ -400,12 +412,14 @@ async function finalizeSending() {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
     
+    // === Lógica de Cooldown na Finalização ===
     const wasQueueEmpty = state.queue.length === 0;
     
     if (currentAnnounceGuildId && !state.quarantine && wasQueueEmpty && totalSent > 0) {
         modifyStateAndSave(s => {
             s.guildData[currentAnnounceGuildId] = s.guildData[currentAnnounceGuildId] || { lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0 };
             s.guildData[currentAnnounceGuildId].lastAnnounceTime = Date.now();
+            // Estatísticas para o próximo cálculo de cooldown
             s.guildData[currentAnnounceGuildId].totalSuccess = success;
             s.guildData[currentAnnounceGuildId].totalFail = fail;
             s.guildData[currentAnnounceGuildId].totalClosed = closed;
@@ -419,12 +433,13 @@ async function finalizeSending() {
   }
 }
 
-// === Commands ===
+// === Commands and flow ===
 client.on("messageCreate", async (message) => {
   try {
     if (!message.content.startsWith("!announce") && !message.content.startsWith("!announcefor")) return;
     if (message.author.bot || !message.guild) return;
 
+    // 1. Prevenção de Cooldown Global Dinâmico (Por Guild)
     const guildId = message.guild.id;
 
     if (!state.guildData[guildId]) {
@@ -435,6 +450,7 @@ client.on("messageCreate", async (message) => {
     const now = Date.now();
     const timeSinceLastAnnounce = now - guildSpecificData.lastAnnounceTime;
     
+    // Usa o resultado da última campanha (armazenado no guildData após a última finalização)
     const lastCampaignSize = guildSpecificData.totalSuccess + guildSpecificData.totalClosed + guildSpecificData.totalFail;
     
     let requiredCooldownMs = GLOBAL_COOLDOWN_MIN_MS;
@@ -447,6 +463,7 @@ client.on("messageCreate", async (message) => {
 
     if (guildSpecificData.lastAnnounceTime !== 0 && timeSinceLastAnnounce < requiredCooldownMs) {
       const remainingTimeMs = requiredCooldownMs - timeSinceLastAnnounce;
+      
       const remainingHours = Math.floor(remainingTimeMs / 3600000);
       const remainingMinutes = Math.ceil((remainingTimeMs % 3600000) / 60000);
       
@@ -456,25 +473,29 @@ client.on("messageCreate", async (message) => {
           if (remainingDisplay) remainingDisplay += ` e `;
           remainingDisplay += `${remainingMinutes} minutos`;
       }
+
       const penaltyDurationHours = (requiredCooldownMs / 3600000).toFixed(1);
-      return message.reply(`⛔ Cooldown Ativo. O último envio de **${lastCampaignSize} DMs** exige um descanso de **${penaltyDurationHours} horas**. Restam **${remainingDisplay}**.`);
+      
+      return message.reply(`⛔ Cooldown Ativo. O último envio de **${lastCampaignSize} DMs** exige um descanso de **${penaltyDurationHours} horas** (anti-spam). Restam **${remainingDisplay}**.`);
     }
 
+    // 2. Prevenção de Múltiplas Execuções Concorrentes (Global)
     if (state.active) {
-      return message.reply("❗ Já existe um envio em andamento **GLOBALMENTE**.");
+      return message.reply("❗ Já existe um envio em andamento **GLOBALMENTE**. Aguarde a conclusão da tarefa atual.");
     }
 
     const mode = message.content.startsWith("!announcefor") ? "for" : "announce";
     const raw = message.content.replace("!announcefor", "").replace("!announce", "").trim();
     const parsed = parseSelectors(raw);
+
     const attachments = [...message.attachments.values()].map(a => a.url);
 
     if (!parsed.cleaned && attachments.length === 0) {
-      return message.reply("O comando precisa de texto ou anexo.");
+      return message.reply("O comando precisa de texto ou anexo. Use `!announce texto -{id}` ou `!announcefor texto +{id}`.");
     }
 
     const guild = message.guild;
-    try { await guild.members.fetch(); } catch (e) { console.warn("guild.members.fetch() falhou (intents?)."); }
+    try { await guild.members.fetch(); } catch (e) { console.warn("guild.members.fetch() falhou (intents?). Continuando com cache."); }
 
     const queue = [];
     guild.members.cache.forEach(m => {
@@ -485,13 +506,14 @@ client.on("messageCreate", async (message) => {
     });
     
     if (queue.length === 0) {
-        return message.reply("A fila de envio está vazia.");
+        return message.reply("A fila de envio está vazia após aplicar os filtros.");
     }
 
     if (fs.existsSync(SENT_FILE)) {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
 
+    // Inicia o estado da execução
     state = {
       active: true,
       currentAnnounceGuildId: guild.id,
@@ -519,12 +541,14 @@ client.on("messageCreate", async (message) => {
 
   } catch (err) {
     console.error("Erro em messageCreate:", err);
-    message.reply("❌ Ocorreu um erro interno.");
+    message.reply("❌ Ocorreu um erro interno ao iniciar o envio.");
   }
 });
 
+// === Ready / auto-resume ===
 client.on("ready", async () => {
   console.log(`Bot online como ${client.user.tag}`);
+
   if (state.progressMessageRef && state.progressMessageRef.channelId && state.progressMessageRef.messageId) {
     try {
       const ch = await client.channels.fetch(state.progressMessageRef.channelId).catch(() => null);
@@ -534,6 +558,7 @@ client.on("ready", async () => {
       }
     } catch (e) { /* ignore */ }
   }
+
   if (state.active && !workerRunning && state.queue && state.queue.length > 0) {
     console.log("Retomando envio pendente...");
     startProgressUpdater();
@@ -541,10 +566,12 @@ client.on("ready", async () => {
   }
 });
 
+// ==== safety handlers ====
 process.on("unhandledRejection", (r) => console.error("UnhandledRejection:", r));
 process.on("uncaughtException", (err) => console.error("UncaughtException:", err));
 client.on("rateLimit", (info) => console.warn("Client rateLimit event:", info));
 
+// === login ===
 if (!process.env.DISCORD_TOKEN) {
   console.error("DISCORD_TOKEN não encontrado.");
   process.exit(1);
