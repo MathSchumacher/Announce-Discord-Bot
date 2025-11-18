@@ -9,8 +9,9 @@ Um bot avançado para envio de **anúncios via DM** no Discord, com suporte a an
 
 ### ✅ Enviar anúncios por DM para todos os membros
 Comando:
+```
 !announce Sua mensagem aqui
-
+```
 
 ### 📎 Suporte a anexos
 Basta anexar imagens, vídeos ou PDFs ao usar o comando.
@@ -18,25 +19,30 @@ O bot enviará **a mesma mensagem + anexos** para cada usuário.
 
 ### 🚫 Ignorar usuários específicos
 Use:
+```
 !announce Mensagem aqui -{USER_ID}
-
+```
 Exemplo:
+```
 !announce Promoção nova! -{111111111111111111} -{222222222222222222}
-
+```
 
 ### 🎯 Enviar somente para usuários específicos
 Comando alternativo:
+```
 !announcefor Mensagem +{USER_ID} +{USER_ID2}
-
+```
 Exemplo:
+```
 !announcefor Teste VIP +{111111111111111111} +{222222222222222222}
-
+```
 
 ### 🔄 Retomar Campanhas Interrompidas
 O bot armazena os membros não alcançados (falhas ou pendentes) em caso de queda, expulsão ou pausa.
 Comando:
+```
 !resume
-
+```
 *O `!resume` tenta reenviar a última mensagem para todos os membros que não a receberam.*
 
 ### 🧩 Paginação + Anti-Travamento
@@ -88,41 +94,45 @@ Ative o modo desenvolvedor:
 # 📦 Instalação e Execução Local
 
 ### 1. Instale dependências
+```
 npm install
-
-
+```
 ### 2. Crie um arquivo **.env** na raiz
 dentro dele:
+```
 DISCORD_TOKEN=seu_token_aqui
-
-
-### 3. Inicie o bot
+```
+### 3. Inicie o bot localmente
+```
 node index.js
-
+```
 
 ---
 
-# 🚀 Deploy na Nuvem (Railway, Render, etc.)
+# 🚀 Deploy na Nuvem (Railway, Replit, etc.)
 
 ## ▶ Railway (recomendado)
 1. Vá em **Variables**
 2. Adicione:
+```
 DISCORD_TOKEN = seu_token
-
-3. Deploy → Redeploy
+```
+1. Deploy → Redeploy
 
 > Não envie seu `.env` para o GitHub.
 
 ---
 
 # 📂 Estrutura do Projeto
+```
 . ├── index.js ├── package.json ├── .gitignore └── README.md
-
+```
 ---
 
 # 🧩 Scripts
+```
 npm start
-
+```
 (Executa `node index.js`)
 
 ---
