@@ -3,10 +3,10 @@ const fs = require("fs");
 const path = require("path");
 const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require("discord.js");
 
-// ===== CONFIGS =====
+// ===== CONFIG =====
 const WORKERS = 1; // 1 worker seguro para host free
-const DELAY_BASE = 1200; // 1.2s entre envios (ajuste se quiser)
-const RETRY_LIMIT = 2;
+const DELAY_BASE = 1200; // ms entre envios (ajuste para mais segurança)
+const RETRY_LIMIT = 3;
 const STATE_FILE = path.resolve(__dirname, "state.json");
 const SENT_FILE = path.resolve(__dirname, "sent.txt");
 const PROGRESS_UPDATE_INTERVAL = 5000;
@@ -27,7 +27,8 @@ function loadState() {
       queue: [],
       stats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null, // { channelId, messageId }
-      mode: "announce"
+      mode: "announce",
+      quarantine: false // runtime flag persisted if needed
     }, s);
   } catch {
     return {
@@ -40,7 +41,8 @@ function loadState() {
       queue: [],
       stats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null,
-      mode: "announce"
+      mode: "announce",
+      quarantine: false
     };
   }
 }
@@ -57,7 +59,8 @@ function saveState(s) {
       queue: Array.isArray(s.queue) ? s.queue : [],
       stats: s.stats || { success: 0, fail: 0, closed: 0 },
       progressMessageRef: (s.progressMessageRef && s.progressMessageRef.channelId && s.progressMessageRef.messageId) ? s.progressMessageRef : null,
-      mode: s.mode || "announce"
+      mode: s.mode || "announce",
+      quarantine: !!s.quarantine
     };
     fs.writeFileSync(STATE_FILE, JSON.stringify(copy, null, 2));
   } catch (e) {
@@ -79,7 +82,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// runtime refs (não persistidos)
+// runtime refs (not persisted)
 let progressMessageRuntime = null;
 let progressUpdaterHandle = null;
 let workerRunning = false;
@@ -99,28 +102,47 @@ function parseSelectors(text) {
   return { cleaned: text.replace(regex, "").trim(), ignore, only };
 }
 
-async function sendDMToUser(userOrMember, payload) {
-  // userOrMember may be a User or GuildMember; both have .send
+// send DM with retry/backoff and quarantine detection
+async function sendDMToMember(memberOrUser, payload) {
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     try {
-      await (userOrMember.send ? userOrMember.send(payload) : userOrMember.send(payload));
+      await (memberOrUser.send ? memberOrUser.send(payload) : memberOrUser.send(payload));
       return true;
     } catch (err) {
-      if (err?.code === 50007) return "closed"; // cannot send messages to this user
-      // rate limit handling if available
+      // DM closed
+      if (err?.code === 50007) return "closed";
+
+      // Detect app quarantine message (Discord anti-spam)
+      const msg = String(err?.message || err);
+      if (msg.includes("app-quarantine") || msg.includes("flagged by our anti-spam system")) {
+        // mark quarantine in state and stop further processing
+        state.quarantine = true;
+        saveState(state);
+        console.error("DETECTED APP-QUARANTINE from Discord API:", msg);
+        return "quarantine";
+      }
+
+      // retry_after if provided
       const retryAfter = err?.retry_after || err?.retryAfter || null;
       if (retryAfter) {
         const ms = Number(retryAfter) + 300;
+        console.warn(`Rate limited, waiting ${ms}ms (attempt ${attempt})`);
         await wait(ms);
         continue;
       }
+
+      // generic 429
       if (err?.status === 429 || err?.statusCode === 429) {
-        const ms = 2000 * attempt;
-        await wait(ms);
+        const back = 2000 * attempt;
+        console.warn(`HTTP 429, waiting ${back}ms (attempt ${attempt})`);
+        await wait(back);
         continue;
       }
-      // backoff
-      await wait(1200 * attempt);
+
+      // other errors -> backoff
+      const backoff = 1200 * attempt;
+      console.warn(`Erro ao enviar DM (attempt ${attempt}): ${msg}. Aguardando ${backoff}ms.`);
+      await wait(backoff);
     }
   }
   return false;
@@ -131,7 +153,7 @@ async function updateProgressEmbed() {
   if (!state.progressMessageRef) return;
   try {
     const ch = await client.channels.fetch(state.progressMessageRef.channelId).catch(() => null);
-    if (!ch) return;
+    if (!ch || !ch.isTextBased()) return;
     const msg = await ch.messages.fetch(state.progressMessageRef.messageId).catch(() => null);
     if (!msg) return;
     const embed = new EmbedBuilder()
@@ -178,61 +200,72 @@ async function workerLoop() {
       try {
         user = await client.users.fetch(userId).catch(() => null);
       } catch { user = null; }
-      if (!user || user.bot) continue;
+      if (!user) continue;
+      if (user.bot) continue;
 
-      // Attempt sending: images first, then text. Only when both succeed (or the only present part succeeds) we write to sent.txt
+      // Images first, then text
       let imageOk = true;
       let textOk = true;
 
-      // 1) images
+      // images
       if (state.attachments && state.attachments.length > 0) {
         const imgPayload = { files: state.attachments };
-        const r = await sendDMToUser(user, imgPayload);
+        const r = await sendDMToMember(user, imgPayload);
         if (r === "closed") {
           state.stats.closed++;
           saveState(state);
           await wait(DELAY_BASE);
-          continue; // do not try text if images can't be sent due to closed DM
+          continue; // do not attempt text
+        } else if (r === "quarantine") {
+          console.error("Quarantine detected; stopping worker loop.");
+          // put this user back to queue? We'll stop processing to avoid further penalties.
+          // Reinsert user at front so resume will retry later.
+          state.queue.unshift(userId);
+          saveState(state);
+          break;
         } else if (r !== true) {
-          imageOk = false;
+          // failure on image
           state.stats.fail++;
           saveState(state);
           await wait(DELAY_BASE);
-          continue; // on image fail treat as fail and skip text (do not add to sent.txt)
+          continue; // skip text
         }
       }
 
-      // 2) text
+      // text
       if (state.text) {
         const textPayload = { content: state.text };
-        const r2 = await sendDMToUser(user, textPayload);
+        const r2 = await sendDMToMember(user, textPayload);
         if (r2 === "closed") {
           state.stats.closed++;
           textOk = false;
+        } else if (r2 === "quarantine") {
+          console.error("Quarantine detected on text send; stopping worker loop.");
+          state.queue.unshift(userId);
+          saveState(state);
+          break;
         } else if (r2 !== true) {
-          textOk = false;
           state.stats.fail++;
+          textOk = false;
         }
       }
 
-      // Determine success: if there were attachments they must be ok; if text present it must be ok.
-      const wasSuccess = ( (state.attachments.length === 0 || imageOk) && ( !state.text || textOk ) );
+      const wasSuccess = ( (state.attachments.length === 0 || imageOk) && (!state.text || textOk) );
 
       if (wasSuccess) {
         state.stats.success++;
-        // append to sent.txt in the exact required format -{${userId}}
+        // append to sent.txt in exact format -{userId}
         try {
           fs.appendFileSync(SENT_FILE, `-{${userId}}\n`);
         } catch (e) {
           console.error("Erro ao escrever sent.txt:", e);
         }
       } else {
-        // if r2 was "closed", we already incremented closed; if it was a fail we incremented fail above
-        // nothing to write into sent.txt
+        // nothing to append (either closed or failed)
       }
 
       saveState(state);
-      // update embed non-blocking
+      // non-blocking embed update
       updateProgressEmbed().catch(() => {});
       await wait(DELAY_BASE + Math.floor(Math.random() * 400));
     }
@@ -256,36 +289,15 @@ function startWorkerSafe() {
 
 // === Finalize logic: send embed + maybe sent.txt ===
 async function finalizeSending() {
-  // ensure we stop updater
   stopProgressUpdater();
 
   const chRef = state.progressMessageRef;
-  if (!chRef) {
-    // nothing to report
-    state.active = false;
-    saveState(state);
-    // Clean sent.txt if no need: if file exists and fail==0, remove it
-    if (fs.existsSync(SENT_FILE) && state.stats.fail === 0) {
-      try { fs.unlinkSync(SENT_FILE); } catch(e) {}
-    }
-    return;
-  }
+  const { success, fail, closed } = state.stats;
 
-  // build embed
-  const embed = new EmbedBuilder()
-    .setTitle("📬 Envio Finalizado")
-    .setColor(state.stats.fail > 0 ? 0xFF0000 : 0x00AEEF)
-    .addFields(
-      { name: "Enviadas", value: `${state.stats.success}`, inline: true },
-      { name: "Falhas", value: `${state.stats.fail}`, inline: true },
-      { name: "DM Fechada", value: `${state.stats.closed}`, inline: true }
-    )
-    .setTimestamp();
-
-  // decide on sending sent.txt
+  // Ensure sent file handling according to rules:
   const hasSentFile = fs.existsSync(SENT_FILE);
   let attachments = [];
-  if (state.stats.fail > 0 && hasSentFile) {
+  if (fail > 0 && hasSentFile) {
     attachments.push(SENT_FILE);
   } else {
     // if no fail, remove sent file if exists (not useful)
@@ -294,30 +306,51 @@ async function finalizeSending() {
     }
   }
 
+  // Build embed (nice)
+  const embed = new EmbedBuilder()
+    .setTitle("📬 Envio Finalizado")
+    .setColor(fail > 0 ? 0xFF0000 : 0x00AEEF)
+    .addFields(
+      { name: "Enviadas", value: `${success}`, inline: true },
+      { name: "Falhas", value: `${fail}`, inline: true },
+      { name: "DM Fechada", value: `${closed}`, inline: true }
+    )
+    .setTimestamp();
+
+  // Quarantine message override
+  if (state.quarantine) {
+    embed.addFields({ name: "⚠️ Quarantine", value: "Seu bot foi marcado pelo sistema anti-spam do Discord (app-quarantine). Abra um ticket/appeal: https://dis.gd/app-quarantine", inline: false });
+  }
+
+  // publish to same message (or channel) where progress was shown
   try {
-    const ch = await client.channels.fetch(chRef.channelId).catch(() => null);
-    if (!ch) {
-      state.active = false;
-      saveState(state);
-      return;
-    }
-    const msg = await ch.messages.fetch(chRef.messageId).catch(() => null);
-    if (msg) {
-      const content = state.stats.fail > 0 ? "⚠️ Houve falhas reais. Envio da lista dos que já receberam em anexo." : "✔️ Envio concluído.";
-      await msg.edit({ content, embeds: [embed], files: attachments });
+    if (chRef && chRef.channelId) {
+      const ch = await client.channels.fetch(chRef.channelId).catch(() => null);
+      if (ch && ch.isTextBased()) {
+        const msg = await ch.messages.fetch(chRef.messageId).catch(() => null);
+        const content = fail > 0 ? "⚠️ Houve falhas reais. Envio da lista dos que já receberam em anexo." : (state.quarantine ? "❗ Envio interrompido por quarentena. Verifique o link no embed." : "✔️ Envio concluído com sucesso.");
+        if (msg) {
+          await msg.edit({ content, embeds: [embed], files: attachments }).catch(async (e) => {
+            console.warn("Não foi possível editar mensagem de progresso, enviando novo resumo.", e);
+            await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
+          });
+        } else {
+          await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
+        }
+      } else {
+        // fallback: can't fetch channel
+        console.warn("Canal de progresso não disponível para postar resumo final.");
+      }
     } else {
-      // send a new message if original not found
-      const content = state.stats.fail > 0 ? "⚠️ Houve falhas reais. Envio da lista dos que já receberam em anexo." : "✔️ Envio concluído.";
-      await ch.send({ content, embeds: [embed], files: attachments });
+      console.warn("Sem referência de progresso para postar resumo final.");
     }
   } catch (e) {
     console.error("Erro ao publicar resumo final:", e);
   } finally {
-    // if we sent attachment, remove file afterwards
-    if (attachments.length > 0) {
+    // cleanup sent.txt if we attached it (we already attached) or if no fail
+    if (attachments.length > 0 || (!attachments.length && fs.existsSync(SENT_FILE))) {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
-    // mark inactive and persist
     state.active = false;
     saveState(state);
   }
@@ -338,7 +371,7 @@ client.on("messageCreate", async (message) => {
     const raw = message.content.replace("!announcefor", "").replace("!announce", "").trim();
     const parsed = parseSelectors(raw);
 
-    // attachments urls (we send as URLs in payload.files which discord.js will fetch automatically if permitted)
+    // attachments urls
     const attachments = [...message.attachments.values()].map(a => a.url);
 
     if (!parsed.cleaned && attachments.length === 0) {
@@ -361,7 +394,7 @@ client.on("messageCreate", async (message) => {
       queue.push(m.id);
     });
 
-    // clear any previous sent file for this run
+    // clear previous sent.txt for this run
     if (fs.existsSync(SENT_FILE)) {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
@@ -377,7 +410,8 @@ client.on("messageCreate", async (message) => {
       only: [...parsed.only],
       queue,
       stats: { success: 0, fail: 0, closed: 0 },
-      progressMessageRef: null
+      progressMessageRef: null,
+      quarantine: false
     };
     saveState(state);
 
