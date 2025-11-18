@@ -10,11 +10,9 @@ const STATE_FILE = path.resolve(__dirname, "state.json");
 const PROGRESS_UPDATE_INTERVAL = 5000;
 
 // === CONFIGURAÇÕES DE SEGURANÇA (ANTI-QUARENTENA) ===
-// Atraso individual entre cada DM para parecer humano e evitar rate-limit imediato.
 const DELAY_BASE_MS = 10000; 
 const DELAY_RANDOM_MS = 10000; 
 const BATCH_SIZE = 25; 
-// NOVO: Pausa de lote variável entre 1 e 5 minutos (Alto Risco)
 const MIN_BATCH_PAUSE_MS = 1 * 60 * 1000; // 1 minuto
 const MAX_BATCH_PAUSE_MS = 5 * 60 * 1000; // 5 minutos
 
@@ -29,13 +27,23 @@ function loadState() {
     try {
         const raw = fs.readFileSync(STATE_FILE, "utf8");
         const s = JSON.parse(raw);
+        // Garante que processedMembers seja um Set ao carregar
+        if (s.guildData) {
+            for (const guildId in s.guildData) {
+                if (s.guildData[guildId].processedMembers) {
+                    s.guildData[guildId].processedMembers = new Set(s.guildData[guildId].processedMembers);
+                } else {
+                    s.guildData[guildId].processedMembers = new Set();
+                }
+            }
+        }
+
         return Object.assign({
             active: false,
             text: "",
             attachments: [],
             ignore: [],
             only: [],
-            // 'queue' agora armazena apenas a fila global
             queue: [], 
             currentRunStats: { success: 0, fail: 0, closed: 0 },
             progressMessageRef: null,
@@ -64,21 +72,27 @@ function loadState() {
 
 function saveState(s) {
     try {
-        // --- 1. Persiste a Fila ATIVA (s.queue) no pendingQueue da Guild ---
+        // --- 1. Prepara guildData para serialização (Set para Array) ---
+        const serializableGuildData = JSON.parse(JSON.stringify(s.guildData));
+        for (const guildId in serializableGuildData) {
+            if (s.guildData[guildId].processedMembers instanceof Set) {
+                // Converte Set para Array para salvar no JSON
+                serializableGuildData[guildId].processedMembers = [...s.guildData[guildId].processedMembers];
+            }
+        }
+        
+        // --- 2. Persiste a Fila ATIVA (s.queue) no pendingQueue da Guild se estiver ativo ---
         if (s.active && s.currentAnnounceGuildId) {
             const currentGuildId = s.currentAnnounceGuildId;
-            s.guildData[currentGuildId] = s.guildData[currentGuildId] || {};
-            // A fila global ATUAL é a fila de pendentes no momento do salvamento.
-            s.guildData[currentGuildId].pendingQueue = s.queue;
-            // A fila global precisa ser limpa no objeto que será persistido no disco.
-            // Para o worker que está rodando, ela deve permanecer ativa até o próximo loop.
+            serializableGuildData[currentGuildId] = serializableGuildData[currentGuildId] || {};
             
-            // Criamos uma cópia do estado onde a fila global é esvaziada, mas a pendingQueue é populada.
-            const tempQueue = s.queue; 
-            s.queue = []; 
+            // A fila global ATUAL é a fila de pendentes no momento do salvamento.
+            serializableGuildData[currentGuildId].pendingQueue = s.queue;
+            
+            // Criamos uma cópia do estado onde a fila global é esvaziada.
             const copy = JSON.parse(JSON.stringify(s)); // Deep copy
-            s.queue = tempQueue; // Restaura a fila para o worker em tempo de execução
             copy.queue = []; // Garante que a cópia salva está sem a fila global
+            copy.guildData = serializableGuildData;
             
             fs.writeFileSync(STATE_FILE, JSON.stringify(copy, null, 2));
 
@@ -96,7 +110,7 @@ function saveState(s) {
                 progressMessageRef: (s.progressMessageRef && s.progressMessageRef.channelId && s.progressMessageRef.messageId) ? s.progressMessageRef : null,
                 mode: s.mode || "announce",
                 quarantine: !!s.quarantine,
-                guildData: s.guildData || {}
+                guildData: serializableGuildData // Usa os dados serializáveis
             };
             fs.writeFileSync(STATE_FILE, JSON.stringify(copy, null, 2));
         }
@@ -141,14 +155,19 @@ function parseSelectors(text) {
         if (m[1] === '-') ignore.add(m[2]);
         if (m[1] === '+') only.add(m[2]);
     }
-    return { cleaned: text.replace(regex, "").trim(), ignore, only };
+    const cleanedText = text.replace(regex, "").trim();
+    // Remove o marcador 'force' se existir
+    const finalCleaned = cleanedText.toLowerCase().includes('force') 
+                         ? cleanedText.replace(/force/i, '').trim()
+                         : cleanedText;
+                         
+    return { cleaned: finalCleaned, ignore, only, hasForce: cleanedText.toLowerCase().includes('force') };
 }
 
-// Garante que cada DM tenha um hash ligeiramente diferente, evitando detecção de spam de conteúdo idêntico.
+// Garante que cada DM tenha um hash ligeiramente diferente
 function getVariedText(baseText) {
     if (!baseText || baseText.length === 0) return "";
     const zeroWidthSpace = "\u200B";
-    // Adiciona 1 a 3 caracteres de espaço de largura zero (\u200B) no início
     const randomSuffix = Array(Math.floor(Math.random() * 3) + 1).fill(zeroWidthSpace).join('');
     return randomSuffix + baseText;
 }
@@ -183,7 +202,7 @@ async function sendDMToMember(memberOrUser, payload) {
 
             if (err?.status === 429 || err?.statusCode === 429) {
                 const backoffMs = (5000 * attempt) + Math.floor(Math.random() * 2000); 
-                console.warn(`RATE LIMITED (429). Waiting ${backoffMs}ms. Attempt ${attempt}/${RETRY_LIMIT}`);
+                console.warn(`RATE LIMITED (429). Waiting (429) ${backoffMs}ms. Attempt ${attempt}/${RETRY_LIMIT}`);
                 await wait(backoffMs);
                 continue;
             }
@@ -216,6 +235,15 @@ async function updateProgressEmbed() {
     if (!msg) return;
 
     try {
+        const guildData = state.guildData[state.currentAnnounceGuildId] || {};
+        
+        // Se o envio está ativo, a fila real é state.queue.
+        // Se foi interrompido, a fila é pendingQueue + failedQueue.
+        let queueLength = state.queue.length;
+        if (!state.active) {
+             queueLength = (guildData.pendingQueue?.length || 0) + (guildData.failedQueue?.length || 0);
+        }
+        
         const embed = new EmbedBuilder()
             .setTitle("📨 Envio em progresso")
             .setColor("#00AEEF")
@@ -223,7 +251,7 @@ async function updateProgressEmbed() {
                 { name: "Enviadas", value: `${state.currentRunStats.success}`, inline: true },
                 { name: "Falhas", value: `${state.currentRunStats.fail}`, inline: true },
                 { name: "DM Fechada", value: `${state.currentRunStats.closed}`, inline: true },
-                { name: "Restando na Fila", value: `${state.queue.length}`, inline: true }
+                { name: "Restando na Fila", value: `${queueLength}`, inline: true }
             )
             .setTimestamp();
         await msg.edit({ embeds: [embed] }).catch(() => {});
@@ -276,7 +304,8 @@ async function workerLoop() {
                 messagesSentInBatch = 0;
                 console.log("Retomando envio após a pausa.");
                 
-                if (state.queue.length === 0) break; 
+                // O estado pode ter mudado durante a longa espera (ex: !stop)
+                if (!state.active || state.queue.length === 0) break; 
             }
             // --- Fim Pausa de Lote Lógica ---
 
@@ -314,7 +343,6 @@ async function workerLoop() {
                         s.currentRunStats.fail++;
                     }
                     s.guildData[currentGuildId].failedQueue = s.guildData[currentGuildId].failedQueue || [];
-                    // Adiciona o ID à failedQueue (somente falhas de API/DM fechada)
                     s.guildData[currentGuildId].failedQueue.push(userId); 
                 });
             };
@@ -328,11 +356,11 @@ async function workerLoop() {
                     imageOk = false;
                     if (result.reason === "quarantine") {
                         console.error("Quarentena detectada; parando worker.");
+                        modifyStateAndSave(s => s.active = false); // Garante a saída
                         break; 
                     } else {
                         registerFailure(result.reason);
                     }
-                    // Atraso antes de tentar o próximo DM após uma falha de anexo
                     await wait(DELAY_BASE_MS + Math.floor(Math.random() * DELAY_RANDOM_MS));
                     continue;
                 }
@@ -353,6 +381,7 @@ async function workerLoop() {
                     textOk = false;
                     if (result.reason === "quarentena") {
                         console.error("Quarentena detectada; parando worker.");
+                        modifyStateAndSave(s => s.active = false); // Garante a saída
                         break; 
                     } else {
                         registerFailure(result.reason);
@@ -372,7 +401,6 @@ async function workerLoop() {
                         modifyStateAndSave(s => s.guildData[currentGuildId].failedQueue.splice(index, 1));
                     }
                 }
-                // O ID já foi removido da pendingQueue implicitamente no saveState/shift() acima, pois ele foi consumido com sucesso.
             }
 
             updateProgressEmbed().catch(() => {});
@@ -409,22 +437,28 @@ async function finalizeSending() {
     const { success, fail, closed } = state.currentRunStats;
     const totalSent = success + fail + closed;
     
-    // Limpa pendingQueue na finalização
-    if (currentAnnounceGuildId && state.guildData[currentAnnounceGuildId]) {
-        state.guildData[currentAnnounceGuildId].pendingQueue = [];
-    }
+    // O estado 'active' já foi definido como false pelo worker ou pelo !stop.
+    
+    // Verifica se restam falhas/pendentes. Como o state foi salvo com a fila no pendingQueue, 
+    // verificamos o pendingQueue + failedQueue do guildData.
+    const currentGuildData = state.guildData[currentAnnounceGuildId] || {};
+    
+    const pendingQueueSize = currentGuildData.pendingQueue?.length || 0;
+    const remainingFails = currentGuildData.failedQueue?.length || 0;
+    
+    const totalRemaining = pendingQueueSize + remainingFails;
+    const wasQueueEmpty = state.queue.length === 0 && totalRemaining === 0;
 
-    // Verifica se restam falhas
-    const remainingFails = currentAnnounceGuildId ? (state.guildData[currentAnnounceGuildId]?.failedQueue?.length || 0) : 0;
-    const remainingText = remainingFails > 0 ? `❗ Restam ${remainingFails} falhas. Use **!resume**.` : "✔️ Envio concluído.";
+    const remainingText = totalRemaining > 0 ? `❗ Restam ${totalRemaining} membros. Use **!resume**.` : "✔️ Envio concluído.";
 
     const embed = new EmbedBuilder()
         .setTitle("📬 Envio Finalizado")
-        .setColor(fail > 0 || state.quarantine ? 0xFF0000 : 0x00AEEF)
+        .setColor(totalRemaining > 0 || state.quarantine ? 0xFF0000 : 0x00AEEF)
         .addFields(
             { name: "Enviadas (Sucesso Total)", value: `${success}`, inline: true },
             { name: "Falhas (API/Erro)", value: `${fail}`, inline: true },
-            { name: "DM Fechada", value: `${closed}`, inline: true }
+            { name: "DM Fechada", value: `${closed}`, inline: true },
+            { name: "Restando para Retomar", value: `${totalRemaining}`, inline: true }
         )
         .setFooter({ text: remainingText })
         .setTimestamp();
@@ -433,14 +467,13 @@ async function finalizeSending() {
         embed.addFields({ name: "⚠️ QUARENTENA ATIVADA", value: "Seu bot foi marcado. Todos os envios foram interrompidos.", inline: false });
     }
     
-    const content = remainingFails > 0 ? remainingText : (state.quarantine ? "❗ Envio interrompido por quarentena." : "✔️ Envio concluído com sucesso.");
+    const content = totalRemaining > 0 ? remainingText : (state.quarantine ? "❗ Envio interrompido por quarentena." : "✔️ Envio concluído com sucesso.");
 
     try {
         if (chRef && chRef.channelId) {
             const ch = await client.channels.fetch(chRef.channelId).catch(() => null);
             if (ch && ch.isTextBased()) {
                 const msg = await ch.messages.fetch(chRef.messageId).catch(() => null);
-                
                 if (msg) {
                     await msg.edit({ content, embeds: [embed], files: [] }).catch(async (e) => {
                         console.warn("Não foi possível editar mensagem de progresso, enviando novo resumo.", e);
@@ -458,24 +491,31 @@ async function finalizeSending() {
     } catch (e) {
         console.error("Erro ao publicar resumo final:", e);
     } finally {
-        // === Lógica de Cooldown na Finalização (SÓ SE A FILA ESTAVA VAZIA) ===
-        const wasQueueEmpty = state.queue.length === 0;
+        // === Lógica de Cooldown e Limpeza Final ===
         
         if (currentAnnounceGuildId && !state.quarantine && wasQueueEmpty && totalSent > 0) {
+            // Envio 100% concluído (fila estava vazia e não houve !stop/queda com pendentes)
             modifyStateAndSave(s => {
                 s.guildData[currentAnnounceGuildId] = s.guildData[currentAnnounceGuildId] || {};
                 s.guildData[currentAnnounceGuildId].lastAnnounceTime = Date.now();
                 s.guildData[currentAnnounceGuildId].totalSuccess = success;
                 s.guildData[currentAnnounceGuildId].totalFail = fail;
                 s.guildData[currentAnnounceGuildId].totalClosed = closed;
+                // Limpa processedMembers, pois a campanha acabou
+                s.guildData[currentAnnounceGuildId].processedMembers = new Set(); 
                 s.active = false;
                 s.currentAnnounceGuildId = null;
+                // Limpa filas de resume, pois o envio acabou.
+                s.guildData[currentAnnounceGuildId].failedQueue = [];
+                s.guildData[currentAnnounceGuildId].pendingQueue = [];
             });
         } else {
-            // Se o envio foi interrompido (quarentena ou resume), não salva o cooldown e mantém active=false.
+            // Envio foi interrompido (quarentena, !stop ou queda, ou terminou com falhas/pendentes).
+            // O estado de active/currentAnnounceGuildId já foi limpo, mas precisamos garantir que a fila global está vazia.
             modifyStateAndSave(s => {
                 s.active = false;
                 s.currentAnnounceGuildId = null;
+                s.queue = [];
             });
         }
     }
@@ -487,24 +527,129 @@ client.on("messageCreate", async (message) => {
         if (message.author.bot || !message.guild) return;
         
         const guildId = message.guild.id;
-        const isAnnounceCommand = message.content.startsWith("!announce") || message.content.startsWith("!announcefor");
-        const isResumeCommand = message.content.toLowerCase().startsWith("!resume");
+        const command = message.content.toLowerCase().split(' ')[0];
+        const isAnnounceCommand = command.startsWith("!announce") || command.startsWith("!announcefor");
+        const isResumeCommand = command === "!resume";
+        const isStopCommand = command === "!stop";
+        const isUpdateCommand = command === "!update";
 
-        if (!isAnnounceCommand && !isResumeCommand) return;
+        if (!isAnnounceCommand && !isResumeCommand && !isStopCommand && !isUpdateCommand) return;
+        
+        // Permite que apenas o dono do servidor use os comandos críticos
+        if (message.author.id !== message.guild.ownerId) {
+             return message.reply("⛔ Apenas o dono do servidor pode usar comandos de anúncio/gestão de fila.");
+        }
 
-        if (!state.guildData[guildId]) {
-            modifyStateAndSave(s => s.guildData[guildId] = { lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0, failedQueue: [], pendingQueue: [], lastRunText: "", lastRunAttachments: [] });
+        // Inicializa dados da guild se necessário (incluindo Set para processedMembers)
+        if (!state.guildData[guildId] || !(state.guildData[guildId].processedMembers instanceof Set)) {
+            modifyStateAndSave(s => s.guildData[guildId] = { 
+                lastAnnounceTime: 0, totalSuccess: 0, totalFail: 0, totalClosed: 0, 
+                failedQueue: [], pendingQueue: [], lastRunText: "", lastRunAttachments: [],
+                processedMembers: new Set() 
+            });
         }
         const guildSpecificData = state.guildData[guildId];
 
 
-        // 1. LÓGICA DO COOLDOWN (APENAS PARA !announce)
-        if (isAnnounceCommand) {
-            // Verifica se já existe um envio globalmente (segurança primária)
-            if (state.active) {
-                return message.reply("❗ Já existe um envio em andamento **GLOBALMENTE**. Aguarde a conclusão da tarefa atual.");
+        // Lógica de !STOP
+        if (isStopCommand) {
+            if (!state.active || state.currentAnnounceGuildId !== guildId) {
+                return message.reply("⚠️ Não há envio ativo neste servidor para ser parado.");
+            }
+            // Apenas desativa e salva. O workerLoop fará a limpeza e finalização.
+            modifyStateAndSave(s => s.active = false); 
+            return message.reply("⏸️ Envio interrompido. Os membros restantes foram salvos. Use `!resume` para continuar a partir de onde parou.");
+        }
+        
+        // Lógica de !UPDATE (Permitido durante ou após o envio)
+        if (isUpdateCommand) {
+            
+            // 1. Verifica se existe uma campanha anterior para retomar/atualizar
+            if (!guildSpecificData.lastRunText && guildSpecificData.lastRunAttachments.length === 0) {
+                 return message.reply("❌ Nenhuma campanha anterior encontrada neste servidor para atualizar. Use `!announce` primeiro.");
             }
 
+            // 2. Determina o alvo da adição (Fila Ativa ou Fila Pendente)
+            const isCampaignActive = state.active && state.currentAnnounceGuildId === guildId;
+            
+            await message.guild.members.fetch().catch(() => {});
+            
+            // 3. Obtém membros já processados/alvejados
+            const processedMembers = guildSpecificData.processedMembers;
+            
+            let membersAdded = 0;
+            const newMembers = [];
+            
+            message.guild.members.cache.forEach(m => {
+                if (!m || m.user.bot) return;
+                
+                // Se o membro ainda NÃO está no Set de membros que já foram alvejados por esta campanha
+                if (!processedMembers.has(m.id)) {
+                    newMembers.push(m.id);
+                    membersAdded++;
+                }
+            });
+
+            if (membersAdded === 0) {
+                return message.reply("✅ Nenhum novo membro para adicionar à fila.");
+            }
+            
+            // 4. Adiciona novos membros ao alvo e atualiza processedMembers
+            modifyStateAndSave(s => {
+                if (isCampaignActive) {
+                    // Adiciona à fila ativa GLOBAL
+                    s.queue.push(...newMembers);
+                } else {
+                    // Adiciona à fila pendente (para ser pego por !resume)
+                    s.guildData[guildId].pendingQueue = s.guildData[guildId].pendingQueue || [];
+                    s.guildData[guildId].pendingQueue.push(...newMembers);
+                }
+                
+                // Atualiza o set de membros processados para não adicioná-los novamente
+                newMembers.forEach(id => s.guildData[guildId].processedMembers.add(id));
+            });
+
+            const statusMsg = isCampaignActive 
+                ? `foi adicionado(s) ao **final da fila de envio ativa**. Restam agora ${state.queue.length} membros.`
+                : `foi adicionado(s) à **fila pendente**. Use \`!resume\` para iniciar o envio.`;
+
+            return message.reply(`➕ **${membersAdded}** novo(s) membro(s) ${statusMsg}`);
+        }
+
+
+        // 1. LÓGICA DO COOLDOWN E CONFIRMAÇÃO (!announce/!announcefor)
+        if (isAnnounceCommand) {
+            
+            // 1.1. Verifica se já existe um envio globalmente (segurança primária)
+            if (state.active) {
+                return message.reply("❗ Já existe um envio em andamento **GLOBALMENTE**. Aguarde a conclusão da tarefa atual ou use `!stop`.");
+            }
+
+            // 1.2. Verifica a necessidade de confirmação (pending/failed queue)
+            const failedQueue = guildSpecificData.failedQueue || [];
+            const pendingQueue = guildSpecificData.pendingQueue || [];
+            const totalRemaining = failedQueue.length + pendingQueue.length;
+            
+            let parsed = parseSelectors(message.content.replace(command, "").trim());
+            
+            // Se houver filas pendentes E o usuário NÃO usou o comando 'force'
+            if (totalRemaining > 0 && !parsed.hasForce) {
+                 const forceCommand = command.endsWith('for') ? `!announcefor force ${parsed.cleaned}` : `!announce force ${parsed.cleaned}`;
+                 
+                 const resumeCount = pendingQueue.length > 0 ? `${pendingQueue.length} pendente(s)` : '';
+                 const failedCount = failedQueue.length > 0 ? `${failedQueue.length} falha(s)` : '';
+                 const separator = resumeCount && failedCount ? ' e ' : '';
+                 const pendingInfo = `${resumeCount}${separator}${failedCount}`;
+                 
+                 return message.reply(`
+                    ⚠️ **Atenção!** Há um envio anterior com **${totalRemaining}** membros (${pendingInfo}) para retomar.
+                    
+                    * Para **continuar** de onde parou, use: **\`!resume\`**
+                    * Para **descartar** essa fila e iniciar uma **nova** campanha, use: **\`${forceCommand}\`**
+                 `);
+            }
+            
+            // 1.3. Lógica do Cooldown (continua apenas se não houver pendentes OU se 'force' foi usado)
             const now = Date.now();
             const timeSinceLastAnnounce = now - guildSpecificData.lastAnnounceTime;
             const lastCampaignSize = guildSpecificData.totalSuccess + guildSpecificData.totalClosed + guildSpecificData.totalFail;
@@ -533,7 +678,15 @@ client.on("messageCreate", async (message) => {
                 
                 return message.reply(`⛔ Cooldown Ativo. O último envio de **${lastCampaignSize} DMs** exige um descanso de **${penaltyDurationHours} horas** (anti-spam). Restam **${remainingDisplay}**.`);
             }
-        }
+            
+            // Se 'force' foi usado, limpa as filas pendentes e falhas (sobrescrita confirmada)
+            if (totalRemaining > 0 && parsed.hasForce) {
+                 modifyStateAndSave(s => {
+                    s.guildData[guildId].failedQueue = [];
+                    s.guildData[guildId].pendingQueue = []; 
+                 });
+                 message.reply(`🗑️ Fila anterior de **${totalRemaining}** membros foi descartada. Iniciando nova campanha.`);
+            }
 
 
         // 2. PREPARAÇÃO DA FILA (ANNOUNCE & RESUME)
@@ -541,7 +694,7 @@ client.on("messageCreate", async (message) => {
         let textToUse = "";
         let attachmentsToUse = [];
         let mode = "announce";
-        let parsed = { cleaned: "", ignore: new Set(), only: new Set() };
+        
         
         if (isResumeCommand) {
             // Verifica se já existe um envio globalmente (segurança primária)
@@ -553,8 +706,8 @@ client.on("messageCreate", async (message) => {
             const failedQueue = guildSpecificData.failedQueue || [];
             const pendingQueue = guildSpecificData.pendingQueue || [];
             
-            // Concatena as duas filas e remove duplicatas (se um ID falhou e depois ficou pendente)
-            const uniqueQueue = [...new Set([...failedQueue, ...pendingQueue])];
+            // Concatena as duas filas e remove duplicatas
+            const uniqueQueue = [...new Set([...pendingQueue, ...failedQueue])];
             
             if (uniqueQueue.length === 0) {
                 return message.reply("✅ Nenhuma falha ou envio pendente para retomar neste servidor.");
@@ -570,40 +723,55 @@ client.on("messageCreate", async (message) => {
             }
             
             console.log(`Retomando envio para ${queue.length} usuários.`);
+            
+            // Ao retomar, movemos os IDs do pendingQueue/failedQueue para a fila ativa (state.queue)
+            // e zeramos as filas de resume da guild.
+            modifyStateAndSave(s => {
+                s.guildData[guildId].failedQueue = [];
+                s.guildData[guildId].pendingQueue = [];
+                s.currentRunStats = { success: 0, fail: 0, closed: 0 }; // Reseta as estatísticas da run
+            });
+
 
         } else if (isAnnounceCommand) {
             
             mode = message.content.startsWith("!announcefor") ? "for" : "announce";
-            const raw = message.content.replace("!announcefor", "").replace("!announce", "").trim();
-            parsed = parseSelectors(raw);
-
+            // O `parsed` já foi calculado acima, contendo o texto limpo (sem 'force')
+            
             attachmentsToUse = [...message.attachments.values()].map(a => a.url);
             textToUse = parsed.cleaned;
 
             if (!textToUse && attachmentsToUse.length === 0) {
+                 // Deve usar o texto limpo, que agora não contém 'force'
                 return message.reply("O comando precisa de texto ou anexo. Use `!announce texto -{id}` ou `!announcefor texto +{id}`.");
             }
 
             const guild = message.guild;
             try { await guild.members.fetch(); } catch (e) { console.warn("guild.members.fetch() falhou (intents?). Continuando com cache."); }
 
+            const initialProcessedMembers = new Set();
+            
             guild.members.cache.forEach(m => {
                 if (!m || !m.user || m.user.bot) return;
+                
+                // Aplica filtros
                 if (mode === "announce" && parsed.ignore.has(m.id)) return;
                 if (mode === "for" && !parsed.only.has(m.id)) return;
+                
                 queue.push(m.id);
+                initialProcessedMembers.add(m.id);
             });
             
             if (queue.length === 0) {
                 return message.reply("A fila de envio está vazia após aplicar os filtros.");
             }
             
-            // LIMPA FILAS ANTERIORES E ARMAZENA O CONTEÚDO ATUAL
+            // ARMAZENA O CONTEÚDO ATUAL E POPULA processedMembers (Filas pendentes/falhas foram limpas pelo 'force' se necessário)
             modifyStateAndSave(s => {
-                s.guildData[guildId].failedQueue = [];
-                s.guildData[guildId].pendingQueue = []; // Limpa pendingQueue ao iniciar uma nova campanha
                 s.guildData[guildId].lastRunText = textToUse;
                 s.guildData[guildId].lastRunAttachments = attachmentsToUse;
+                s.guildData[guildId].processedMembers = initialProcessedMembers;
+                s.currentRunStats = { success: 0, fail: 0, closed: 0 }; 
             });
 
         }
@@ -620,12 +788,12 @@ client.on("messageCreate", async (message) => {
             ignore: [...parsed.ignore],
             only: [...parsed.only],
             queue, // A fila global é populada para a execução
-            currentRunStats: { success: 0, fail: 0, closed: 0 },
+            currentRunStats: state.currentRunStats, // Mantém o estado atual, mas resetamos na preparação do resume/announce
             progressMessageRef: null,
-            quarantine: state.quarantine, // Mantém o estado de quarentena
+            quarantine: state.quarantine, 
             guildData: state.guildData
         };
-        saveState(state); // Salva o estado inicial com a fila no pendingQueue
+        saveState(state); // Salva o estado inicial
 
         const commandName = isResumeCommand ? "Retomando" : "Preparando";
         const progressMsg = await message.reply(`📢 **${commandName}** envio para **${queue.length}** membros...`);
