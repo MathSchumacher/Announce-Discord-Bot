@@ -4,12 +4,17 @@ const path = require("path");
 const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require("discord.js");
 
 // ===== CONFIG =====
-const WORKERS = 1; // 1 worker seguro para host free
-const DELAY_BASE = 2500; // ms entre envios (ajuste para mais segurança)
+const WORKERS = 1; 
+const DELAY_BASE = 2500;
 const RETRY_LIMIT = 3;
 const STATE_FILE = path.resolve(__dirname, "state.json");
 const SENT_FILE = path.resolve(__dirname, "sent.txt");
 const PROGRESS_UPDATE_INTERVAL = 5000;
+
+// === CONFIG DE SEGURANÇA ANTIS-SPAM (COOLDOWN DINÂMICO) ===
+const GLOBAL_COOLDOWN_MIN_HOURS = 6; // Mínimo de descanso absoluto
+const GLOBAL_COOLDOWN_MIN_MS = GLOBAL_COOLDOWN_MIN_HOURS * 3600000;
+const COOLDOWN_PENALTY_MS_PER_USER = 1000; // 1 segundo de penalidade por usuário enviado
 // ===================
 
 // === State persistence ===
@@ -28,7 +33,8 @@ function loadState() {
       stats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null,
       mode: "announce",
-      quarantine: false
+      quarantine: false,
+      lastAnnounceTime: 0 // NOVO: Timestamp
     }, s);
   } catch {
     return {
@@ -42,7 +48,8 @@ function loadState() {
       stats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null,
       mode: "announce",
-      quarantine: false
+      quarantine: false,
+      lastAnnounceTime: 0 // NOVO
     };
   }
 }
@@ -60,7 +67,8 @@ function saveState(s) {
       stats: s.stats || { success: 0, fail: 0, closed: 0 },
       progressMessageRef: (s.progressMessageRef && s.progressMessageRef.channelId && s.progressMessageRef.messageId) ? s.progressMessageRef : null,
       mode: s.mode || "announce",
-      quarantine: !!s.quarantine
+      quarantine: !!s.quarantine,
+      lastAnnounceTime: s.lastAnnounceTime || 0 // NOVO
     };
     fs.writeFileSync(STATE_FILE, JSON.stringify(copy, null, 2));
   } catch (e) {
@@ -68,7 +76,6 @@ function saveState(s) {
   }
 }
 
-/** Abstração para modificar e salvar o estado em uma única operação. */
 function modifyStateAndSave(callback) {
   callback(state);
   saveState(state);
@@ -112,7 +119,6 @@ function parseSelectors(text) {
 async function sendDMToMember(memberOrUser, payload) {
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     try {
-      // Otimização 2B: Simplificado, pois memberOrUser.send() sempre existe.
       await memberOrUser.send(payload);
       return { success: true };
     } catch (err) {
@@ -158,14 +164,13 @@ async function sendDMToMember(memberOrUser, payload) {
 async function updateProgressEmbed() {
   if (!state.progressMessageRef) return;
   
-  // Otimização 4A: Reutiliza a referência em runtime se ela existir
   let msg = progressMessageRuntime;
   if (!msg) {
     try {
       const ch = await client.channels.fetch(state.progressMessageRef.channelId).catch(() => null);
       if (!ch || !ch.isTextBased()) return;
       msg = await ch.messages.fetch(state.progressMessageRef.messageId).catch(() => null);
-      progressMessageRuntime = msg; // Guarda a referência se encontrada
+      progressMessageRuntime = msg;
     } catch (e) {
       return;
     }
@@ -209,12 +214,10 @@ async function workerLoop() {
   console.log("Worker iniciado.");
   try {
     while (state.active && state.queue && state.queue.length > 0) {
-      const userId = state.queue[0]; // Pega o primeiro, mas ainda não remove
+      const userId = state.queue[0];
 
-      // Otimização 2A: Prioriza o cache para evitar requisições
       let user = client.users.cache.get(userId);
       if (!user) {
-        // Se não estiver em cache, tenta o fetch (necessário para DM)
         try {
           user = await client.users.fetch(userId).catch(() => null);
         } catch {
@@ -222,19 +225,16 @@ async function workerLoop() {
         }
       }
       
-      // Se não conseguiu o usuário ou é bot, remove da fila e continua
       if (!user || user.bot) {
         modifyStateAndSave(s => s.queue.shift());
         continue;
       }
 
-      modifyStateAndSave(s => s.queue.shift()); // Remove da fila APENAS se o fetch for bem-sucedido ou falhar
+      modifyStateAndSave(s => s.queue.shift());
 
-      // Images first, then text
       let imageOk = true;
       let textOk = true;
 
-      // images
       if (state.attachments && state.attachments.length > 0) {
         const imgPayload = { files: state.attachments };
         const result = await sendDMToMember(user, imgPayload);
@@ -247,7 +247,7 @@ async function workerLoop() {
             continue;
           } else if (result.reason === "quarantine") {
             console.error("Quarantine detected; stopping worker loop.");
-            modifyStateAndSave(s => s.queue.unshift(userId)); // Volta o ID para fila, mas salva o estado
+            modifyStateAndSave(s => s.queue.unshift(userId));
             break;
           } else {
             modifyStateAndSave(s => s.stats.fail++);
@@ -257,9 +257,7 @@ async function workerLoop() {
         }
       }
 
-      // text
       if (state.text) {
-        // Se a imagem falhou por 'closed' (DM fechada), não tenta enviar o texto.
         if (!imageOk && result.reason === "closed") continue; 
         
         const textPayload = { content: state.text };
@@ -284,16 +282,11 @@ async function workerLoop() {
       if (wasSuccess) {
         modifyStateAndSave(s => s.stats.success++);
         
-        // Otimização 3A: Formato do sent.txt simplificado para ser apenas o ID
         fs.appendFile(SENT_FILE, `${userId}\n`, (err) => {
           if (err) console.error("Erro ao escrever sent.txt:", err);
         });
-      } else if (!wasSuccess && imageOk && !textOk) {
-        // Se a imagem foi enviada, mas o texto falhou (erro de rede/api, não closed/quarantine), ainda conta como falha
-        // A contagem de falha já está no bloco de texto, não precisa de mais nada aqui.
       }
 
-      // non-blocking embed update
       updateProgressEmbed().catch(() => {});
       await wait(DELAY_BASE + Math.floor(Math.random() * 1500));
     }
@@ -318,45 +311,38 @@ function startWorkerSafe() {
 // === Finalize logic: send embed + maybe sent.txt ===
 async function finalizeSending() {
   stopProgressUpdater();
-  
-  // Limpa a referência em runtime após parar o updater
   progressMessageRuntime = null;
 
   const chRef = state.progressMessageRef;
   const { success, fail, closed } = state.stats;
+  const totalSent = success + fail + closed;
 
-  // Ensure sent file handling according to rules:
   const hasSentFile = fs.existsSync(SENT_FILE);
   let attachments = [];
   if (fail > 0 && hasSentFile) {
-    attachments.push({ attachment: SENT_FILE, name: "sucessos.txt" }); // Nome mais claro
+    attachments.push({ attachment: SENT_FILE, name: "sucessos.txt" });
   } else {
-    // if no fail, remove sent file if exists (not useful)
     if (hasSentFile) {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
   }
 
-  // Build embed (nice)
   const embed = new EmbedBuilder()
     .setTitle("📬 Envio Finalizado")
     .setColor(fail > 0 || state.quarantine ? 0xFF0000 : 0x00AEEF)
     .addFields(
-      { name: "Enviadas (Sucesso Total)", value: `${success}`, inline: true }, // Título mais descritivo
+      { name: "Enviadas (Sucesso Total)", value: `${success}`, inline: true },
       { name: "Falhas (API/Erro)", value: `${fail}`, inline: true },
       { name: "DM Fechada", value: `${closed}`, inline: true }
     )
     .setTimestamp();
 
-  // Quarantine message override
   if (state.quarantine) {
     embed.addFields({ name: "⚠️ QUARENTENA ATIVADA", value: "Seu bot foi marcado pelo sistema anti-spam do Discord (app-quarantine). Todos os envios foram interrompidos. Abra um ticket/appeal: https://dis.gd/app-quarantine", inline: false });
   }
   
-  // Texto de resumo
   const content = fail > 0 ? "⚠️ Houve falhas. A lista de **sucessos** está em anexo." : (state.quarantine ? "❗ Envio interrompido por quarentena. Verifique o link no embed." : "✔️ Envio concluído com sucesso.");
 
-  // publish to same message (or channel) where progress was shown
   try {
     if (chRef && chRef.channelId) {
       const ch = await client.channels.fetch(chRef.channelId).catch(() => null);
@@ -369,11 +355,9 @@ async function finalizeSending() {
             await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
           });
         } else {
-          // Fallback: enviar como nova mensagem no canal
           await ch.send({ content, embeds: [embed], files: attachments }).catch(() => {});
         }
       } else {
-        // fallback: can't fetch channel
         console.warn("Canal de progresso não disponível para postar resumo final.");
       }
     } else {
@@ -382,13 +366,23 @@ async function finalizeSending() {
   } catch (e) {
     console.error("Erro ao publicar resumo final:", e);
   } finally {
-    // cleanup sent.txt: se anexamos (attachments > 0) ou se ele ainda existir e não for necessário (sem falha)
     if (fs.existsSync(SENT_FILE)) {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
     
-    modifyStateAndSave(s => s.active = false);
-    // Note: O state já é salvo com active=false no modifyStateAndSave
+    // === Lógica de Cooldown na Finalização ===
+    const wasQueueEmpty = state.queue.length === 0;
+    
+    // Atualiza o timestamp APENAS se o envio terminou (fila vazia) e não foi interrompido por quarentena
+    if (!state.quarantine && wasQueueEmpty && totalSent > 0) {
+        modifyStateAndSave(s => {
+            s.lastAnnounceTime = Date.now();
+            s.active = false;
+        });
+    } else {
+        // Se houve quarentena ou a fila não foi esvaziada, apenas desativa a flag 'active'
+        modifyStateAndSave(s => s.active = false);
+    }
   }
 }
 
@@ -397,6 +391,41 @@ client.on("messageCreate", async (message) => {
   try {
     if (!message.content.startsWith("!announce") && !message.content.startsWith("!announcefor")) return;
     if (message.author.bot) return;
+
+    // 1. Prevenção de Cooldown Global Dinâmico
+    const now = Date.now();
+    const timeSinceLastAnnounce = now - state.lastAnnounceTime;
+    
+    // O total da última campanha é a soma de todos os resultados
+    const lastCampaignSize = state.stats.success + state.stats.closed + state.stats.fail;
+    
+    // Calcula o Cooldown Total Necessário (mínimo de 6h ou penalidade do último envio)
+    let requiredCooldownMs = GLOBAL_COOLDOWN_MIN_MS;
+    if (lastCampaignSize > 0) {
+        requiredCooldownMs = Math.max(
+            GLOBAL_COOLDOWN_MIN_MS, 
+            lastCampaignSize * COOLDOWN_PENALTY_MS_PER_USER
+        );
+    }
+    
+    if (state.lastAnnounceTime !== 0 && timeSinceLastAnnounce < requiredCooldownMs) {
+      const remainingTimeMs = requiredCooldownMs - timeSinceLastAnnounce;
+      
+      // Conversão para horas e minutos
+      const remainingHours = Math.floor(remainingTimeMs / 3600000);
+      const remainingMinutes = Math.ceil((remainingTimeMs % 3600000) / 60000);
+      
+      let remainingDisplay = "";
+      if (remainingHours > 0) remainingDisplay += `${remainingHours} horas`;
+      if (remainingMinutes > 0) {
+          if (remainingDisplay) remainingDisplay += ` e `;
+          remainingDisplay += `${remainingMinutes} minutos`;
+      }
+      
+      const penaltyDurationHours = (requiredCooldownMs / 3600000).toFixed(1);
+      
+      return message.reply(`⛔ Não posso iniciar outro envio agora. O último envio de **${lastCampaignSize} DMs** exige um descanso de **${penaltyDurationHours} horas** (para evitar banimento). Restam **${remainingDisplay}**.`);
+    }
 
     // prevent starting a new run if active
     if (state.active) {
@@ -407,7 +436,6 @@ client.on("messageCreate", async (message) => {
     const raw = message.content.replace("!announcefor", "").replace("!announce", "").trim();
     const parsed = parseSelectors(raw);
 
-    // attachments urls
     const attachments = [...message.attachments.values()].map(a => a.url);
 
     if (!parsed.cleaned && attachments.length === 0) {
@@ -417,11 +445,8 @@ client.on("messageCreate", async (message) => {
     const guild = message.guild;
     if (!guild) return message.reply("Comando deve ser usado dentro de um servidor.");
 
-    // try to fetch members to populate cache (may require privileged intent)
-    // Tentar o fetch para garantir que o cache de membros esteja o mais completo possível antes de montar a fila.
     try { await guild.members.fetch(); } catch (e) { console.warn("guild.members.fetch() falhou (intents?). Continuando com cache."); }
 
-    // build queue from cache applying selectors
     const queue = [];
     guild.members.cache.forEach(m => {
       if (!m || !m.user) return;
@@ -431,12 +456,10 @@ client.on("messageCreate", async (message) => {
       queue.push(m.id);
     });
 
-    // clear previous sent.txt for this run
     if (fs.existsSync(SENT_FILE)) {
       try { fs.unlinkSync(SENT_FILE); } catch (e) {}
     }
 
-    // set state
     state = {
       active: true,
       guildId: guild.id,
@@ -448,18 +471,17 @@ client.on("messageCreate", async (message) => {
       queue,
       stats: { success: 0, fail: 0, closed: 0 },
       progressMessageRef: null,
-      quarantine: false
+      quarantine: false,
+      lastAnnounceTime: state.lastAnnounceTime // Mantém o timestamp da última conclusão para o cálculo do cooldown
     };
     saveState(state);
 
-    // send initial progress message and keep reference
     const progressMsg = await message.reply("📢 Preparando envio…");
     modifyStateAndSave(s => s.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id });
 
     await wait(700);
     try { await progressMsg.edit("🔄 Envio iniciado em modo seguro."); } catch (e) {}
 
-    // start updater and worker
     startProgressUpdater();
     startWorkerSafe();
 
@@ -472,7 +494,6 @@ client.on("messageCreate", async (message) => {
 client.on("ready", async () => {
   console.log(`Bot online como ${client.user.tag}`);
 
-  // Otimização 4A: Busca a referência do runtime apenas uma vez no Ready
   if (state.progressMessageRef && state.progressMessageRef.channelId && state.progressMessageRef.messageId) {
     try {
       const ch = await client.channels.fetch(state.progressMessageRef.channelId).catch(() => null);
