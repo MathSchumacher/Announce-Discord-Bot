@@ -1,154 +1,126 @@
-# 📢 Announce Discord Bot
-Por **Matheus Schumacher**
+﻿# **🚀 Announce Discord Bot: **Envio de DMs em massa****
+<p align="center">
+<img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js">
+<img src="https://img.shields.io/badge/Discord.js-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord.js">
+<img src="https://img.shields.io/badge/Nodemailer-007bff?style=for-the-badge&logo=nodemailer&logoColor=white" alt="Nodemailer">
+<img src="https://img.shields.io/badge/Persistência-Dados-lightgrey?style=for-the-badge" alt="Persistência">
+</p>
 
-Um bot avançado para envio de **anúncios via DM** no Discord, com suporte a anexos, filtros de usuários, e controle **inteligente e robusto** de rate limit. É capaz de funcionar em servidores pequenos ou gigantes (+20.000 membros) com segurança.
+*Desenvolvido por **Matheus Schumacher**.*
 
----
-
-# ✨ Funcionalidades Principais
-
-### ✅ Enviar anúncios por DM para todos os membros
-Comando:
-```
-!announce Sua mensagem aqui
-```
-
-### 📎 Suporte a anexos
-Basta anexar imagens, vídeos ou PDFs ao usar o comando.
-O bot enviará **a mesma mensagem + anexos** para cada usuário.
-
-### 🚫 Ignorar usuários específicos
-Use:
-```
-!announce Mensagem aqui -{USER_ID}
-```
-Exemplo:
-```
-!announce Promoção nova! -{111111111111111111} -{222222222222222222}
-```
-
-### 🎯 Enviar somente para usuários específicos
-Comando alternativo:
-```
-!announcefor Mensagem +{USER_ID} +{USER_ID2}
-```
-Exemplo:
-```
-!announcefor Teste VIP +{111111111111111111} +{222222222222222222}
-```
-
-### 🔄 Retomar Campanhas Interrompidas
-O bot armazena os membros não alcançados (falhas ou pendentes) em caso de queda, expulsão ou pausa.
-Comando:
-```
-!resume
-```
-*O `!resume` tenta reenviar a última mensagem para todos os membros que não a receberam.*
-
-### 🧩 Paginação + Anti-Travamento
-- Envia 1 DM por vez
-- Delay automático entre envios (evita rate limit)
-- **Pausa de Lote Variável:** Após 25 DMs, pausa randomicamente por 1 a 5 minutos.
-- Funciona em servidores **com dezenas de milhares de membros**
+<big>Um sistema avançado de comunicação DM no Discord, projetado para operar com **eficiência máxima** e **segurança proativa** contra bloqueios de serviço (rate limits e quarentena). Ideal para servidores de qualquer escala que buscam engajamento direto e confiável.</big>
 
 ---
 
-# 🛡 Sistema de Segurança e Cooldown
+## **✨ Recursos de Nível Empresarial**
 
-O bot foi construído com mecanismos proativos para evitar a **Quarentena da Aplicação (App Quarantine)** do Discord.
+### **1\. 🛡️ Segurança Ativa & Anti-Quarentena**
 
-### ⏲ Cooldown Dinâmico (Por Servidor)
-O bot impõe um tempo de espera para novos anúncios (`!announce`):
-- **Base:** 6 horas.
-- **Penalidade:** O tempo de espera aumenta com base no número de DMs enviadas na campanha anterior, agindo como uma medida anti-spam robusta.
+Nosso worker de envio implementa um algoritmo robusto para simular comportamento humano e desviar de sistemas anti-spam do Discord.
+
+| Recurso | Tecnologia/Mecanismo | Objetivo Estratégico |
+| :---- | :---- | :---- |
+| **Humanização** | currentDelayBase, currentBatchBase | Varia o intervalo de **10s a 20s** e o tamanho do lote (**20-30 DMs**) para evitar padrões detectáveis. |
+| **Backoff Exponencial** | sendDM (429/Rate Limit) | Aguarda tempos crescentes em caso de Rate Limit temporário, evitando a suspensão. |
+| **Pausa de Lote** | workerLoop | Pausa obrigatória de **5 a 10 minutos** a cada lote, simulando o operador humano. |
+| **Detecção de Soft-Ban** | SOFT\_BAN\_THRESHOLD (80% / 20+ tentativas) | Interrompe preventivamente o serviço se a taxa de DMs fechadas for perigosamente alta. |
+---
+### **2\. 💾 Persistência de Estado & Continuidade (HA/DR)**
+
+A integridade da campanha é garantida por um sistema de salvar/carregar multicamadas, ideal para ambientes de deploy contínuo (CI/CD).
+
+* **StateManager:** Gerencia o estado (state.json), salvando a cada **10 alterações (SAVE\_THRESHOLD)** e no encerramento do processo (SIGINT/SIGTERM).  
+* **Auto-Resume:** Após um reinício limpo, o bot retoma automaticamente a fila ativa.  
+* **🚨 Backup de Emergência (DR):** Em caso de Quarentena, falha crítica ou deploy/troca de token, o sistema envia automaticamente o arquivo de estado (resume\_list.json) por **e-mail (nodemailer)** para matheusmschumacher@gmail.com.  
+* **Retomada Forçada:** O comando \!resume permite a restauração completa da campanha anexando o arquivo de backup de e-mail.  
+  * **Restrição de Guild:** Por segurança e consistência, a restauração por anexo só é válida no **servidor de origem da campanha**.
+---
+### **3\. 🚫 Gestão Inteligente de Membros Bloqueados**
+
+Implementação de uma lista permanente de DMs que falham com código **50007 (DM Fechada)**.
+
+* **Lista blockedDMs:** Membros com DMs fechadas são marcados como permanentemente inacessíveis após a primeira falha.  
+* **Filtro Ativo:** A lista de bloqueio é aplicada em todos os novos anúncios (\!announce), atualizações de membros (\!update) e retomadas (\!resume), **garantindo que o bot nunca mais desperdice recursos ou risco de quarentena** tentando contatar esses usuários.
 
 ---
 
-# 🛠 Como Criar Seu Bot no Discord
+## **⚙️ Tecnologias e Arquitetura**
 
-### 1. Acesse o painel de desenvolvedor
-🔗 https://discord.com/developers/applications
-
-### 2. Crie uma nova aplicação
-Bot → "Add Bot"
-
-### 3. Pegue o Token do Bot
-Em **Bot → Token**
-
-> ⚠️ **Nunca compartilhe seu token!**
-
-### 4. Ative os Intents Necessários
-Em **Bot → Privileged Gateway Intents**:
-
-- ✔ **Server Members Intent** (Essencial para listar membros)
-- ✔ **Message Content Intent** (Essencial para ler o comando e a mensagem)
-- ✔ Presence Intent (opcional)
-
-### 5. Pegue o Guild ID (ID do servidor)
-Ative o modo desenvolvedor:
-- Configurações → Avançado → Modo desenvolvedor
-- Clique com botão direito no servidor → "Copiar ID"
+* **Core:** Node.js, **discord.js v14+** (utilizando Intents, Embeds e Attachments).  
+* **Estado:** StateManager (Persistência assíncrona com state.json).  
+* **Comunicação:** nodemailer (Para serviços de e-mail críticos, exigindo autenticação App Password/TLS).  
+* **Processamento:** workerLoop (Execução segura em lote com pausas).
 
 ---
 
-# 📦 Instalação e Execução Local
+## **🧭 Guia de Comandos**
 
-### 1. Instale dependências
+Todos os comandos requerem a permissão de **Administrador**.
+
+| Comando | Descrição | Status |
+| :---- | :---- | :---- |
+| **\!announce \[msg\]** | Inicia nova campanha DM para membros elegíveis (ignora bloqueados). | Nova Campanha |
+| **\!announcefor \[msg\]** | Inicia campanha **apenas** para IDs específicos (+{ID}). | Filtro \+{ID} |
+| **\!resume** | Continua a última campanha interrompida **(Suporta anexo JSON de backup)**. | Persistência |
+| **\!stop** | Pausa o envio ativo, movendo a fila atual para pendentes. | Controle |
+| **\!status** | Exibe estado, cooldown, contagem de Pendentes/Falhas e **Membros Bloqueados**. | Monitoramento |
+| **\!update** | Adiciona novos membros (que entraram desde a última campanha) à fila pendente, **filtrando bloqueados**. | Manutenção |
+---
+## **⚡Ações Especiais (Forçar e Filtrar)**
+
+| Sintaxe | Descrição |
+| :---- | :---- |
+| `!announce [msg] force` | **Descarta** filas pendentes e inicia um novo anúncio. |
+| `!announce [msg] -{ID}` | Ignora o membro/bot com o ID fornecido na campanha. |
+| `!resume <anexo.json>` | Restaura o estado da campanha a partir do arquivo de backup de emergência. |
+
+---
+
+## **🛠 Configuração Rápida**
+
+### **1\. Dependências**
+
+Instale os pacotes necessários:
+
 ```
-npm install
+npm install discord.js dotenv nodemailer
 ```
-### 2. Crie um arquivo **.env** na raiz
-dentro dele:
+
+### **2\. Variáveis de Ambiente (.env)**
+
+Crie e configure o arquivo .env para habilitar o sistema de backup:
+
 ```
 DISCORD_TOKEN=seu_token_aqui
+
+# Gmail (Senha de App)
+EMAIL_USER=seu_email_que_envia@gmail.com
+EMAIL_PASS=sua_senha_de_app_gmail
+
+# E-mail para backups de emergência
+TARGET_EMAIL=matheusmschumacher@gmail.com
 ```
-### 3. Inicie o bot localmente
+
+### **3\. Configuração do Discord**
+
+Certifique-se de que os **Intents Privilegiados** estão ativados no painel de desenvolvedor (Bot \-\> Privileged Gateway Intents):
+
+* ✅ **Presence Intent**
+* ✅ **Server Members Intent**  
+* ✅ **Message Content Intent**
+
+### **4\. Inicialização**
+
 ```
 node index.js
 ```
 
----
-
-# 🚀 Deploy na Nuvem (Railway, Replit, etc.)
-
-## ▶ Railway (recomendado)
-1. Vá em **Variables**
-2. Adicione:
-```
-DISCORD_TOKEN = seu_token
-```
-1. Deploy → Redeploy
-
-> Não envie seu `.env` para o GitHub.
+O bot gerará e utilizará o arquivo state.json para manter o estado da campanha.
 
 ---
 
-# 📂 Estrutura do Projeto
-```
-. ├── index.js ├── package.json ├── .gitignore └── README.md
-```
----
+## **🤝 Contribuição e Licença**
 
-# 🧩 Scripts
-```
-npm start
-```
-(Executa `node index.js`)
+Pull requests, relatórios de bugs e sugestões são bem-vindos.
 
----
-
-# 🤝 Contribuição
-Pull requests são bem-vindos.
-
-1. Fork o repositório
-2. Crie uma branch
-3. Faça commits claros
-4. Envie PR
-
----
-
-# 🛡 Licença
-Código desenvolvido por **Matheus Schumacher**.
-Uso livre.
-
----
+Código desenvolvido por **Matheus Schumacher**. Uso livre.

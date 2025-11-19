@@ -31,3 +31,8 @@ build/
 # Temporary files
 *.tmp
 *.temp
+progress.json
+Dockerfile
+subscribers.json
+state.json
+index.test.js
