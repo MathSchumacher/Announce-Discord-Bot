@@ -9,10 +9,9 @@ const STATE_FILE = path.resolve(__dirname, "state.json");
 const PROGRESS_UPDATE_INTERVAL = 5000;
 
 // === SEGURANÇA ANTI-QUARENTENA ===
-const DELAY_BASE_MS = 10000; // 10s base entre DMs
+let currentDelayBase = 10000; // 10s base (dinâmico)
 const DELAY_RANDOM_MS = 10000; // +0-10s aleatório
-// const BATCH_SIZE = 25; // Removido, agora é dinâmico
-const BATCH_BASE = 25; // Base para o lote
+let currentBatchBase = 25; // Base para o lote (dinâmico)
 const BATCH_VARIANCE = 5; // Variação do lote (entre 20 e 30)
 const MIN_BATCH_PAUSE_MS = 5 * 60 * 1000; // 1 min
 const MAX_BATCH_PAUSE_MS = 10 * 60 * 1000; // 5 min
@@ -155,11 +154,20 @@ const memberCache = new Map();
 // ===== UTILIDADES =====
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
+function randomizeParameters() {
+    // Flutua a base de delay entre 8s e 15s
+    currentDelayBase = Math.floor(Math.random() * (15000 - 8000 + 1)) + 8000;
+    
+    // Flutua a base do lote entre 15 e 30
+    currentBatchBase = Math.floor(Math.random() * (30 - 15 + 1)) + 15;
+    
+    console.log(`🎲 Humanizer: Novo ritmo definido (Base Delay: ${currentDelayBase/1000}s, Base Batch: ${currentBatchBase})`);
+}
+
 function getNextBatchSize() {
-    // Retorna um número aleatório entre (BATCH_BASE - BATCH_VARIANCE) e (BATCH_BASE + BATCH_VARIANCE)
-    // Ex: Se BATCH_BASE=25 e BATCH_VARIANCE=5, varia entre 20 e 30
-    const min = BATCH_BASE - BATCH_VARIANCE;
-    const max = BATCH_BASE + BATCH_VARIANCE;
+    // Retorna um número aleatório baseado na base atual
+    const min = currentBatchBase - BATCH_VARIANCE;
+    const max = currentBatchBase + BATCH_VARIANCE;
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
@@ -354,6 +362,9 @@ async function workerLoop() {
                 await updateProgressEmbed();
                 await wait(pauseDuration);
                 
+                // Humanizer: Altera o ritmo após a pausa
+                randomizeParameters();
+                
                 // Verifica se estado mudou durante pausa
                 if (!stateManager.state.active || stateManager.state.queue.length === 0) {
                     console.log("⚠️ Estado alterado durante pausa - Saindo");
@@ -454,7 +465,7 @@ async function workerLoop() {
             updateProgressEmbed().catch(() => {});
             
             // Delay entre mensagens
-            await wait(DELAY_BASE_MS + Math.floor(Math.random() * DELAY_RANDOM_MS));
+            await wait(currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS));
             sentInBatch++;
         }
 
