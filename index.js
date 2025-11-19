@@ -11,9 +11,11 @@ const PROGRESS_UPDATE_INTERVAL = 5000;
 // === SEGURANÇA ANTI-QUARENTENA ===
 const DELAY_BASE_MS = 10000; // 10s base entre DMs
 const DELAY_RANDOM_MS = 10000; // +0-10s aleatório
-const BATCH_SIZE = 25; // Pausa a cada 25 DMs
-const MIN_BATCH_PAUSE_MS = 1 * 60 * 1000; // 1 min
-const MAX_BATCH_PAUSE_MS = 5 * 60 * 1000; // 5 min
+// const BATCH_SIZE = 25; // Removido, agora é dinâmico
+const BATCH_BASE = 25; // Base para o lote
+const BATCH_VARIANCE = 5; // Variação do lote (entre 20 e 30)
+const MIN_BATCH_PAUSE_MS = 5 * 60 * 1000; // 1 min
+const MAX_BATCH_PAUSE_MS = 10 * 60 * 1000; // 5 min
 
 // === COOLDOWN DINÂMICO ===
 const GUILD_COOLDOWN_MIN_HOURS = 6;
@@ -152,6 +154,14 @@ const memberCache = new Map();
 
 // ===== UTILIDADES =====
 const wait = ms => new Promise(r => setTimeout(r, ms));
+
+function getNextBatchSize() {
+    // Retorna um número aleatório entre (BATCH_BASE - BATCH_VARIANCE) e (BATCH_BASE + BATCH_VARIANCE)
+    // Ex: Se BATCH_BASE=25 e BATCH_VARIANCE=5, varia entre 20 e 30
+    const min = BATCH_BASE - BATCH_VARIANCE;
+    const max = BATCH_BASE + BATCH_VARIANCE;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
 
 function parseSelectors(text) {
     const ignore = new Set();
@@ -329,11 +339,12 @@ async function workerLoop() {
 
     try {
         let sentInBatch = 0;
+        let currentBatchSize = getNextBatchSize();
 
         while (state.active && state.queue.length > 0) {
             
             // === PAUSA DE LOTE ===
-            if (sentInBatch >= BATCH_SIZE) {
+            if (sentInBatch >= currentBatchSize) {
                 const pauseRange = MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS;
                 const pauseDuration = MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * pauseRange);
                 const pauseMinutes = (pauseDuration / 60000).toFixed(1);
@@ -349,8 +360,10 @@ async function workerLoop() {
                     break;
                 }
                 
+                // Reseta o contador e define um novo tamanho de lote
                 sentInBatch = 0;
-                console.log("▶️ Retomando envio");
+                currentBatchSize = getNextBatchSize();
+                console.log(`▶️ Retomando envio. Novo lote máximo: ${currentBatchSize}`);
             }
 
             // === PROCESSAMENTO ===
