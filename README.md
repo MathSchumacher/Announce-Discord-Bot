@@ -27,16 +27,17 @@ Nosso worker de envio implementa um algoritmo robusto para simular comportamento
 | :---- | :---- | :---- |
 | **Humanização** | currentDelayBase, currentBatchBase | Varia o intervalo de **10s a 20s** e o tamanho do lote (**20-30 DMs**) para evitar padrões detectáveis. |
 | **Backoff Exponencial** | sendDM (429/Rate Limit) | Aguarda tempos crescentes em caso de Rate Limit temporário, evitando a suspensão. |
-| **Pausa de Lote** | workerLoop | Pausa obrigatória de **5 a 10 minutos** a cada lote, simulando o operador humano. |
+| **Pausa de Lote** | workerLoop | Pausa obrigatória de **10 a 20 minutos** a cada lote, simulando o operador humano. |
 | **Detecção de Soft-Ban** | SOFT\_BAN\_THRESHOLD (80% / 20+ tentativas) | Interrompe preventivamente o serviço se a taxa de DMs fechadas for perigosamente alta. |
+| **Penalidade por Falha** | penalityTime | Interrompe o serviço por 60s se uma DM fechada barrar o envio ou por 30s se um envio falhar. |
 ---
 ### **2\. 💾 Persistência de Estado & Continuidade (HA/DR)**
 
 A integridade da campanha é garantida por um sistema de salvar/carregar multicamadas, ideal para ambientes de deploy contínuo (CI/CD).
 
-* **StateManager:** Gerencia o estado (state.json), salvando a cada **10 alterações (SAVE\_THRESHOLD)** e no encerramento do processo (SIGINT/SIGTERM).  
+* **StateManager:** Gerencia o estado (state.json), salvando a cada **5 alterações (SAVE\_THRESHOLD)** e no encerramento do processo (SIGINT/SIGTERM).  
 * **Auto-Resume:** Após um reinício limpo, o bot retoma automaticamente a fila ativa.  
-* **🚨 Backup de Emergência (DR):** Em caso de Quarentena, falha crítica ou deploy/troca de token, o sistema envia automaticamente o arquivo de estado (resume\_list.json) por **e-mail (nodemailer)** para matheusmschumacher@gmail.com.  
+* **🚨 Backup de Emergência (DR):** Em caso de Quarentena, falha crítica ou deploy/troca de token, o sistema envia automaticamente o arquivo de estado (resume\_list.json) por **e-mail (nodemailer)**, precisa configurar EMAIL_USER, EMAIL_PASS e TARGET_EMAIL.  
 * **Retomada Forçada:** O comando \!resume permite a restauração completa da campanha anexando o arquivo de backup de e-mail.  
   * **Restrição de Guild:** Por segurança e consistência, a restauração por anexo só é válida no **servidor de origem da campanha**.
 ---
