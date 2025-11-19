@@ -6,6 +6,11 @@
 <img src="https://img.shields.io/badge/Persistência-Dados-lightgrey?style=for-the-badge" alt="Persistência">
 </p>
 
+<p align="center">
+ <img src="./img/ICON_BOT.png" width="450">
+</p>
+
+
 *Desenvolvido por **Matheus Schumacher**.*
 
 <big>Um sistema avançado de comunicação DM no Discord, projetado para operar com **eficiência máxima** e **segurança proativa** contra bloqueios de serviço (rate limits e quarentena). Ideal para servidores de qualquer escala que buscam engajamento direto e confiável.</big>

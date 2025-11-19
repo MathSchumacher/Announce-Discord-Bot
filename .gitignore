@@ -34,5 +34,6 @@ build/
 progress.json
 Dockerfile
 subscribers.json
-state.json
+tests/state.json
 index.test.js
+state.json
