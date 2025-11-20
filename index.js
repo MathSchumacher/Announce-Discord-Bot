@@ -6,7 +6,7 @@ const nodemailer = require("nodemailer"); // Necessário para enviar o backup po
 const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField } = require("discord.js");
 
 // ============================================================================
-// CONFIGURAÇÕES GERAIS E CONSTANTES
+// CONFIGURAÇÕES GERAIS E CONSTANTES (MODO STEALTH ATIVADO)
 // ============================================================================
 
 const RETRY_LIMIT = 3;
@@ -14,14 +14,17 @@ const STATE_FILE = path.resolve(__dirname, "state.json");
 const PROGRESS_UPDATE_INTERVAL = 5000;
 const TARGET_EMAIL = process.env.TARGET_EMAIL || "matheusmschumacher@gmail.com";
 
-// === SEGURANÇA ANTI-QUARENTENA (MODO SEGURO) ===
-// Valores aumentados para evitar detecção de spam pelo Discord
-let currentDelayBase = 25000; // 25 segundos de delay base entre mensagens
-const DELAY_RANDOM_MS = 15000; // Adiciona de 0 a 15 segundos aleatórios extras
-let currentBatchBase = 15; // Tamanho base do lote (envia 15, depois pausa)
-const BATCH_VARIANCE = 5; // Variação do lote (entre 10 e 20 mensagens)
-const MIN_BATCH_PAUSE_MS = 10 * 60 * 1000; // Pausa mínima de 10 minutos entre lotes
-const MAX_BATCH_PAUSE_MS = 20 * 60 * 1000; // Pausa máxima de 20 minutos entre lotes
+// === SEGURANÇA: VALORES AUMENTADOS PARA EVITAR DETECÇÃO ===
+let currentDelayBase = 25000; // Aumentado para 25s base
+const DELAY_RANDOM_MS = 15000; // Variação de até +15s
+let currentBatchBase = 12; // Lotes menores (12 msgs) são mais seguros
+const BATCH_VARIANCE = 4; // Variação do lote (8 a 16)
+const MIN_BATCH_PAUSE_MS = 12 * 60 * 1000; // Pausa mínima de 12 minutos
+const MAX_BATCH_PAUSE_MS = 25 * 60 * 1000; // Pausa máxima de 25 minutos
+
+// === FILTROS DE SEGURANÇA DE CONTA (NOVO) ===
+const MIN_ACCOUNT_AGE_DAYS = 30; // Ignora contas com menos de 30 dias (anti-armadilha)
+const IGNORE_NO_AVATAR = true;   // Ignora usuários sem foto de perfil (geralmente bots/spam traps)
 
 // === COOLDOWN DINÂMICO POR SERVIDOR ===
 const GUILD_COOLDOWN_MIN_HOURS = 6;
@@ -31,7 +34,7 @@ const COOLDOWN_PENALTY_MS_PER_USER = 2000; // Adiciona 2s de cooldown para cada 
 // === OTIMIZAÇÃO E PROTEÇÃO CONTRA SOFT-BAN ===
 const SAVE_THRESHOLD = 5; // Salva o arquivo JSON a cada 5 alterações de estado
 const MEMBER_CACHE_TTL = 5 * 60 * 1000; // Cache de lista de membros por 5 minutos
-const SOFT_BAN_THRESHOLD = 0.5; // Se 50% das tentativas falharem, ativa o modo de emergência
+const SOFT_BAN_THRESHOLD = 0.4; // Se 40% das tentativas falharem, ativa o modo de emergência (mais restrito)
 const SOFT_BAN_MIN_SAMPLES = 10; // Mínimo de 10 tentativas para calcular a taxa de falha
 
 // ============================================================================
@@ -79,7 +82,7 @@ async function sendBackupEmail(reason, state) {
 
     // Cria o objeto de backup
     const backupData = {
-        source: "Bot_Resume_System_Full",
+        source: "Bot_Stealth_System_Full",
         timestamp: Date.now(),
         reason: reason,
         text: state.text || (guildId ? state.guildData[guildId]?.lastRunText : ""),
@@ -93,8 +96,8 @@ async function sendBackupEmail(reason, state) {
     const mailOptions = {
         from: process.env.EMAIL_USER,
         to: TARGET_EMAIL,
-        subject: `🚨 Bot Backup Alert: ${reason}`,
-        text: `O sistema de envio foi interrompido.\n\n` +
+        subject: `🚨 Bot Security Alert: ${reason}`,
+        text: `O sistema de envio foi interrompido para proteção.\n\n` +
               `📌 Motivo: ${reason}\n` +
               `👥 Usuários Restantes: ${remainingUsers.length}\n\n` +
               `COMO RETOMAR:\n` +
@@ -103,7 +106,7 @@ async function sendBackupEmail(reason, state) {
               `3. Use o comando !resume e anexe este arquivo na mensagem.`,
         attachments: [
             {
-                filename: `resume_backup_${Date.now()}.json`,
+                filename: `resume_stealth_${Date.now()}.json`,
                 content: jsonContent
             }
         ]
@@ -276,17 +279,15 @@ let lastEmbedState = null;
 const memberCache = new Map();
 
 // ============================================================================
-// UTILITÁRIOS E AUXILIARES
+// UTILITÁRIOS E AUXILIARES (COM MELHORIAS HUMANAS)
 // ============================================================================
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 function randomizeParameters() {
-    // Define novos parâmetros aleatórios para humanizar o comportamento
-    // Delay entre 20s e 30s
-    currentDelayBase = Math.floor(Math.random() * (30000 - 20000 + 1)) + 20000; 
-    // Lote entre 10 e 20 mensagens
-    currentBatchBase = Math.floor(Math.random() * (20 - 10 + 1)) + 10; 
+    // Humanizer: Muda o delay base para não parecer robô
+    currentDelayBase = Math.floor(Math.random() * (35000 - 22000 + 1)) + 22000; 
+    currentBatchBase = Math.floor(Math.random() * (15 - 8 + 1)) + 8; 
     
     console.log(`🎲 Humanizer: Novo Ritmo -> Delay ~${(currentDelayBase/1000).toFixed(1)}s | Lote ~${currentBatchBase} msgs`);
 }
@@ -295,6 +296,26 @@ function getNextBatchSize() {
     const min = Math.max(1, currentBatchBase - BATCH_VARIANCE);
     const max = currentBatchBase + BATCH_VARIANCE;
     return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// Função para calcular "tempo de leitura/digitação" baseado no texto
+function calculateTypingTime(text) {
+    if (!text) return 1500; // Se for só imagem, 1.5s
+    const charactersPerSecond = 15; // Velocidade média de digitação humana relaxada
+    const ms = (text.length / charactersPerSecond) * 1000;
+    return Math.min(9000, Math.max(2500, ms)); // Mínimo 2.5s, Máximo 9s
+}
+
+// Filtro de "Conta Fria" ou suspeita
+function isSuspiciousAccount(user) {
+    // 1. Verifica idade da conta
+    const ageInDays = (Date.now() - user.createdTimestamp) / (1000 * 60 * 60 * 24);
+    if (ageInDays < MIN_ACCOUNT_AGE_DAYS) return true;
+
+    // 2. Verifica Avatar (contas sem avatar são frequentemente monitoradas)
+    if (IGNORE_NO_AVATAR && !user.avatar) return true;
+
+    return false;
 }
 
 function parseSelectors(text) {
@@ -319,7 +340,6 @@ function parseSelectors(text) {
 function getVariedText(text) {
     if (!text || text.includes("http")) return text || "";
     // Adiciona caracteres invisíveis aleatórios para mudar o hash da mensagem
-    // Isso ajuda a evitar que o Discord agrupe as mensagens como spam idêntico
     const invisibleChars = ["\u200B", "\u200C", "\u200D", "\u2060"];
     const randomChar = invisibleChars[Math.floor(Math.random() * invisibleChars.length)];
     return `${text}${randomChar}`;
@@ -362,7 +382,7 @@ async function getCachedMembers(guild) {
 function detectSoftBan(stats) {
     const total = stats.success + stats.fail + stats.closed;
     if (total < SOFT_BAN_MIN_SAMPLES) return false;
-    // Se a taxa de erro (fechadas + falhas) for maior que o limite (50%), retorna true
+    // Se a taxa de erro for muito alta, retorna true
     return ((stats.closed + stats.fail) / total) >= SOFT_BAN_THRESHOLD;
 }
 
@@ -391,15 +411,40 @@ async function readAttachmentJSON(message) {
     });
 }
 
-async function sendDM(user, payload) {
+// ============================================================================
+// FUNÇÃO DE ENVIO UNIFICADO E INTELIGENTE (O CORAÇÃO DA MELHORIA)
+// ============================================================================
+
+async function sendStealthDM(user, contentText, attachments) {
+    // 1. Cria o canal primeiro para poder enviar "Typing"
+    let dmChannel;
+    try {
+        dmChannel = await user.createDM();
+    } catch (e) {
+        return { success: false, reason: "closed" }; // DM Fechada
+    }
+
+    // 2. Simula Comportamento Humano (Typing...)
+    try {
+        await dmChannel.sendTyping();
+        const typeTime = calculateTypingTime(contentText);
+        await wait(typeTime);
+    } catch (e) { /* Ignora erro no typing */ }
+
+    // 3. Prepara Payload Único (Muito mais seguro que enviar separado)
+    const payload = {};
+    if (contentText) payload.content = getVariedText(contentText);
+    if (attachments && attachments.length > 0) payload.files = attachments;
+
+    // 4. Loop de Tentativa com Backoff Inteligente
     for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
         try {
-            await user.send(payload);
+            await dmChannel.send(payload);
             return { success: true };
         } catch (err) {
             const errMsg = (err.message || "").toLowerCase();
             
-            // DM Fechada (Erro 50007) - Não adianta tentar de novo
+            // Erro 50007: DM Fechada
             if (err.code === 50007) {
                 return { success: false, reason: "closed" };
             }
@@ -411,24 +456,29 @@ async function sendDM(user, payload) {
                 return { success: false, reason: "quarantine" };
             }
             
-            // Rate Limit com tempo específico
+            // Auto-Adaptação a Rate Limit (Retry After)
             if (err.retry_after) {
-                const waitTime = err.retry_after * 1000 + 2000;
-                console.warn(`⏳ Rate limit (API): aguardando ${waitTime}ms`);
+                const waitTime = err.retry_after * 1000 + 5000;
+                console.warn(`⏳ Rate limit (API): Discord pediu calma. Aumentando delays futuros e esperando ${waitTime}ms.`);
+                
+                // "Aprende" que precisa ir mais devagar
+                currentDelayBase += 5000; 
+                currentBatchBase = Math.max(5, currentBatchBase - 2);
+
                 await wait(waitTime);
                 continue;
             }
             
             // Erro 429 Genérico
             if (err.status === 429 || err.statusCode === 429) {
-                const backoff = 10000 * attempt; // Espera longa
+                const backoff = 15000 * attempt;
                 console.warn(`⏳ 429 Genérico: aguardando ${backoff}ms`);
                 await wait(backoff);
                 continue;
             }
             
-            // Outros erros - backoff exponencial curto
-            const backoff = 2000 * attempt;
+            // Outros erros
+            const backoff = 3000 * attempt;
             console.error(`❌ Erro envio DM (${attempt}/${RETRY_LIMIT}): ${err.message}`);
             if (attempt < RETRY_LIMIT) {
                 await wait(backoff);
@@ -440,14 +490,13 @@ async function sendDM(user, payload) {
 }
 
 // ============================================================================
-// WORKER LOOP (O CORAÇÃO DO BOT)
+// WORKER LOOP (REESCRITO PARA SEGURANÇA MÁXIMA)
 // ============================================================================
 
 async function workerLoop() {
-    console.log("🚀 Worker de envio iniciado (Modo Seguro Ativado)");
+    console.log("🚀 Worker Stealth Iniciado");
     const state = stateManager.state;
     const guildId = state.currentAnnounceGuildId;
-    // Obtém referência para os dados da guild atual
     const gd = state.guildData[guildId] || {};
 
     try {
@@ -456,152 +505,99 @@ async function workerLoop() {
 
         while (state.active && state.queue.length > 0) {
             
-            // === 1. VERIFICAÇÃO DE PAUSA DE LOTE ===
+            // === 1. GESTÃO DE PAUSA DE LOTES (COM RANDOMIZAÇÃO) ===
             if (sentInBatch >= currentBatchSize) {
                 const pauseRange = MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS;
                 const pauseDuration = MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * pauseRange);
-                const pauseMinutes = (pauseDuration / 60000).toFixed(1);
                 
-                console.log(`⏸️ Fim do lote (${sentInBatch} envios). Pausando por ~${pauseMinutes} minutos para segurança.`);
+                console.log(`⏸️ Lote (${sentInBatch}) concluído. Descansando por ${(pauseDuration/60000).toFixed(1)} minutos (Stealth Mode).`);
                 
-                // Salva e atualiza interface antes de dormir
+                // Salva estado e atualiza UI antes de dormir
                 stateManager.forceSave();
                 await updateProgressEmbed();
                 
                 await wait(pauseDuration);
                 
-                // Recalcula parâmetros para o próximo lote
+                // Recalcula parâmetros para variar comportamento
                 randomizeParameters();
                 
-                // Verifica se o bot foi parado durante a pausa
-                if (!stateManager.state.active || stateManager.state.queue.length === 0) {
-                    break;
-                }
+                if (!stateManager.state.active || stateManager.state.queue.length === 0) break;
                 
                 sentInBatch = 0;
                 currentBatchSize = getNextBatchSize();
             }
 
-            // === 2. PREPARAÇÃO DO MEMBRO ===
-            const userId = state.queue.shift(); // Remove o primeiro da fila
-            await stateManager.modify(() => {}); // Trigger para salvar
+            // === 2. PREPARAÇÃO DO USUÁRIO ===
+            const userId = state.queue.shift();
+            await stateManager.modify(() => {}); // Trigger save check
 
-            // Filtro de Segurança: Se já estiver na lista negra, pula sem tentar
+            // Filtro Rápido: Lista Negra Local
             if (gd.blockedDMs && gd.blockedDMs.includes(userId)) {
-                console.log(`⏭️ Pulando ID bloqueado anteriormente: ${userId}`);
+                console.log(`⏭️ Ignorando ID na lista de bloqueio: ${userId}`);
                 continue;
             }
 
-            const user = client.users.cache.get(userId) || await client.users.fetch(userId).catch(() => null);
-            
-            // Ignora Bots
-            if (!user || user.bot) continue;
-
-            // === 3. FILTRO HEURÍSTICO (NOVO) ===
-            // Verifica se o membro parece suspeito (sem avatar + poucos cargos)
-            let isSuspicious = false;
+            // Busca usuário no Discord
+            let user;
             try {
-                const guild = client.guilds.cache.get(guildId);
-                if (guild) {
-                    const member = await guild.members.fetch(userId).catch(() => null);
-                    // Se não tem avatar E só tem o cargo @everyone (size <= 1)
-                    if (member && !user.avatar && member.roles.cache.size <= 1) {
-                        isSuspicious = true;
-                    }
-                }
-            } catch (e) {}
-
-            // Se quiser ativar o pular suspeitos, descomente abaixo:
-            /* if (isSuspicious) {
-                console.log(`⚠️ Pulando conta suspeita (sem avatar/cargos): ${user.tag}`);
+                user = await client.users.fetch(userId);
+            } catch (e) {
+                console.log(`⏭️ Usuário não encontrado/inválido: ${userId}`);
                 continue;
             }
-            */
+            
+            if (user.bot) continue;
 
-            // === 4. ENVIO ===
-            let imageSuccess = true;
-            let textSuccess = true;
-            let failureReason = null;
-
-            // Envia anexos primeiro
-            if (state.attachments && state.attachments.length > 0) {
-                const result = await sendDM(user, { files: state.attachments });
-                
-                if (!result.success) {
-                    imageSuccess = false;
-                    failureReason = result.reason;
-                    
-                    // Se for quarentena, para TUDO imediatamente
-                    if (result.reason === "quarantine") {
-                        console.error("🚨 Worker interrompido por Quarentena (Anexo)");
-                        await stateManager.modify(s => s.active = false);
-                        await sendBackupEmail("Quarentena Detectada (Envio de Anexo)", stateManager.state);
-                        break;
+            // === 3. FILTRO DE QUALIDADE DE CONTA (ANTI-ARMADILHA) ===
+            if (isSuspiciousAccount(user)) {
+                console.log(`🚫 Pulando conta suspeita/fria (Nova ou sem Avatar): ${user.tag}`);
+                // Opcional: Marcar como processado para não tentar de novo na mesma sessão
+                await stateManager.modify(s => {
+                    if (!s.guildData[guildId].processedMembers.includes(userId)) {
+                        s.guildData[guildId].processedMembers.push(userId);
                     }
-                }
+                });
+                continue;
             }
 
-            // Envia texto se o anexo passou (ou se não tinha anexo)
-            if (imageSuccess && state.text) {
-                const content = getVariedText(state.text);
-                const result = await sendDM(user, { content });
-                
-                if (!result.success) {
-                    textSuccess = false;
-                    failureReason = result.reason;
-                    
-                    if (result.reason === "quarantine") {
-                        console.error("🚨 Worker interrompido por Quarentena (Texto)");
-                        await stateManager.modify(s => s.active = false);
-                        await sendBackupEmail("Quarentena Detectada (Envio de Texto)", stateManager.state);
-                        break;
-                    }
-                }
-            }
-
-            const wasSuccess = imageSuccess && textSuccess;
+            // === 4. ENVIO UNIFICADO (TEXTO + IMAGEM JUNTOS) ===
+            const result = await sendStealthDM(user, state.text, state.attachments);
 
             // === 5. ATUALIZAÇÃO DE ESTATÍSTICAS ===
             await stateManager.modify(s => {
                 const gData = s.guildData[guildId];
                 
-                if (wasSuccess) {
+                if (result.success) {
                     s.currentRunStats.success++;
-                    
                     // Remove da lista de falhas antiga se existir
-                    if (gData && gData.failedQueue) {
-                        const idx = gData.failedQueue.indexOf(userId);
-                        if (idx > -1) gData.failedQueue.splice(idx, 1);
-                    }
+                    const idx = gData.failedQueue.indexOf(userId);
+                    if (idx > -1) gData.failedQueue.splice(idx, 1);
                 } else {
-                    if (failureReason === "closed") {
+                    if (result.reason === "closed") {
                         s.currentRunStats.closed++;
-                        
-                        // Adiciona à lista de bloqueio permanente
-                        if (gData) {
-                            if (!gData.blockedDMs.includes(userId)) gData.blockedDMs.push(userId);
-                            // Adiciona aos processados para não tentar em !update
-                            if (!gData.processedMembers.includes(userId)) gData.processedMembers.push(userId);
-                        }
+                        if (!gData.blockedDMs.includes(userId)) gData.blockedDMs.push(userId);
+                    } else if (result.reason === "quarantine") {
+                        // A flag quarantine já foi setada dentro do sendStealthDM
+                        s.active = false;
                     } else {
                         s.currentRunStats.fail++;
-                        // Adiciona à fila de falhas para retentar depois
-                        if (gData) {
-                            if (!gData.failedQueue.includes(userId)) gData.failedQueue.push(userId);
-                        }
+                        if (!gData.failedQueue.includes(userId)) gData.failedQueue.push(userId);
                     }
                 }
+                
+                // Marca como processado
+                if (!gData.processedMembers.includes(userId)) gData.processedMembers.push(userId);
             });
 
-            // === 6. PENALIDADE DE ERRO (NOVO) ===
-            if (!wasSuccess) {
-                // Se falhou, aplica uma pausa imediata para "esfriar" o sistema
-                const penaltyTime = failureReason === "closed" ? 60000 : 30000; // 1 min se fechada, 30s outros
-                console.warn(`⚠️ Falha no envio (${failureReason}). Aplicando pausa de penalidade de ${penaltyTime/1000}s...`);
-                await wait(penaltyTime);
+            // === 6. VERIFICAÇÕES DE SEGURANÇA PÓS-ENVIO ===
+            
+            // Se entrou em quarentena, para tudo e manda e-mail
+            if (stateManager.state.quarantine) {
+                await sendBackupEmail("Quarentena Detectada (API Flag)", stateManager.state);
+                break;
             }
 
-            // === 7. DETECÇÃO DE SOFT-BAN ===
+            // Detecção de Soft-Ban (Muitos erros seguidos)
             if (detectSoftBan(state.currentRunStats)) {
                 console.error("🚨 SOFT-BAN DETECTADO: Taxa de erro excedeu limite seguro.");
                 await stateManager.modify(s => {
@@ -614,10 +610,23 @@ async function workerLoop() {
 
             updateProgressEmbed().catch(() => {});
             
-            // Delay normal apenas se foi sucesso (se falhou, já pagou a penalidade)
-            if (wasSuccess) {
-                await wait(currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS));
+            // === 7. DELAY INTELIGENTE (MENTAL PAUSE) ===
+            if (result.success) {
+                let delay = currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS);
+                
+                // 10% de chance de uma "pausa mental" extra (simula o humano se distraindo)
+                if (Math.random() < 0.1) {
+                    delay += 30000; // +30s
+                    console.log("☕ Pausa mental simulada (+30s)...");
+                }
+                
+                await wait(delay);
+            } else {
+                // Se falhou, aplica penalidade de espera
+                const penalty = result.reason === "closed" ? 5000 : 20000;
+                await wait(penalty);
             }
+
             sentInBatch++;
         }
 
@@ -630,11 +639,9 @@ async function workerLoop() {
     } catch (err) {
         console.error("💥 Erro Crítico no Worker:", err);
         stateManager.forceSave();
-        // Tenta enviar backup se o erro for fatal
         await sendBackupEmail(`Erro Crítico no Worker: ${err.message}`, stateManager.state);
     } finally {
         workerRunning = false;
-        
         const finalState = stateManager.state;
         const wasInterrupted = finalState.queue.length > 0 && (!finalState.active || finalState.quarantine);
         
@@ -772,13 +779,14 @@ async function updateProgressEmbed() {
         let remaining = state.queue.length;
         
         const embed = new EmbedBuilder()
-            .setTitle("📨 Envio em Andamento")
+            .setTitle("📨 Envio Stealth em Andamento")
             .setColor("#00AEEF")
+            .setDescription(`Delay Atual: ~${(currentDelayBase/1000).toFixed(0)}s | Lote: ${currentBatchBase}`)
             .addFields(
                 { name: "✅ Sucesso", value: `${state.currentRunStats.success}`, inline: true },
                 { name: "❌ Falhas", value: `${state.currentRunStats.fail}`, inline: true },
                 { name: "🔒 Bloqueados", value: `${state.currentRunStats.closed}`, inline: true },
-                { name: "⏳ Fila Atual", value: `${remaining}`, inline: true }
+                { name: "⏳ Fila", value: `${remaining}`, inline: true }
             )
             .setTimestamp();
 
@@ -874,7 +882,7 @@ client.on("messageCreate", async (message) => {
     if (isStatus) {
         const isActive = state.active && state.currentAnnounceGuildId === guildId;
         const embed = new EmbedBuilder()
-            .setTitle("📊 Status do Sistema")
+            .setTitle("📊 Status do Sistema Stealth")
             .setColor(isActive ? 0x00FF00 : 0x808080)
             .addFields(
                 { name: "Estado", value: isActive ? "🟢 Ativo" : "⚪ Parado", inline: true },
@@ -892,7 +900,7 @@ client.on("messageCreate", async (message) => {
 
         const cooldownInfo = calculateCooldownInfo(gd);
         if (cooldownInfo) {
-            embed.addFields({ name: "⏰ Cooldown", value: cooldownInfo, inline: false });
+            embed.addFields({ name: "⏰ Cooldown Sugerido", value: cooldownInfo, inline: false });
         }
 
         return message.reply({ embeds: [embed] });
@@ -1085,10 +1093,6 @@ client.on("messageCreate", async (message) => {
             if (mode === "for" && !parsed.only.has(m.id)) return;
             if (mode === "announce" && parsed.ignore.has(m.id)) return;
 
-            // 4. Heurística (Opcional): Pula membros sem avatar e sem cargos extras
-            /* if (!m.user.avatar && m.roles.cache.size <= 1) return; 
-            */
-
             queue.push(m.id);
             processedSet.add(m.id);
         });
@@ -1116,7 +1120,7 @@ client.on("messageCreate", async (message) => {
             gData.processedMembers = [...processedSet];
         });
 
-        const progressMsg = await message.reply(`🚀 Iniciando envio para **${queue.length}** membros...`);
+        const progressMsg = await message.reply(`🚀 Iniciando envio Stealth para **${queue.length}** membros...`);
         
         await stateManager.modify(s => {
             s.progressMessageRef = {
@@ -1135,7 +1139,7 @@ client.on("messageCreate", async (message) => {
 // ============================================================================
 
 client.on("ready", async () => {
-    console.log(`✅ Bot online como: ${client.user.tag}`);
+    console.log(`✅ Bot online como: ${client.user.tag} (Modo Stealth Ativado)`);
     
     const state = stateManager.state;
     
