@@ -1,0 +1,12 @@
+{
+  "active": true,
+  "queue": [],
+  "sent": [],
+  "failed": [],
+  "closed": [],
+  "stats": {
+    "sent": 0,
+    "failed": 0,
+    "closed": 0
+  }
+}
