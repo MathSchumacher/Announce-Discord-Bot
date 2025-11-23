@@ -151,6 +151,8 @@ class StateManager {
             progressMessageRef: null,
             quarantine: false,
             currentAnnounceGuildId: null,
+            privacyMode: "public", 
+            initiatorId: null, // 🆕 Salva quem iniciou para mandar DM se falhar
             guildData: {} 
         };
     }
@@ -164,6 +166,9 @@ class StateManager {
 
             loaded.ignore = new Set(Array.isArray(loaded.ignore) ? loaded.ignore : []);
             loaded.only = new Set(Array.isArray(loaded.only) ? loaded.only : []);
+            
+            if (!loaded.privacyMode) loaded.privacyMode = "public";
+            if (!loaded.initiatorId) loaded.initiatorId = null;
 
             for (const guildId in loaded.guildData) {
                 const gd = loaded.guildData[guildId];
@@ -264,7 +269,6 @@ function ensureGuildData(state, guildId) {
             pendingQueue: [],
             lastRunText: "",
             lastRunAttachments: [],
-            // Adicionado para evitar erro em calculateCooldownInfo (se for usado)
             lastAnnounceTime: 0,
             totalSuccess: 0,
             totalClosed: 0,
@@ -364,19 +368,20 @@ async function getAiVariation(originalText, globalname) {
     if (!model || !originalText || originalText.length < 3) return originalText;
     try {
         const prompt = `
-        Aja como um **Micro-Editor de Texto** com a **única e CRÍTICA função** de realizar uma alteração pontual na mensagem abaixo, que se destina a "${globalname}".
+        Aja como um **Motor de Variação de Texto (Spintax Generator)**. Sua **única e CRÍTICA função** é reescrever a mensagem abaixo, destinada a "${globalname}", gerando uma variação **aleatória e única** a cada nova requisição.
 
         **Regras de Saída (Siga-as Rigorosamente):**
-        1. **MUDANÇA OBRIGATÓRIA:** Você DEVE selecionar APENAS UMA ÚNICA PALAVRA da "Mensagem Original" e substituí-la por um sinônimo adequado. A alteração é compulsória.
-        2. Mantenha EXATAMENTE o mesmo significado, tom e intenção da "Mensagem Original".
-        3. Se houver links (http...), MANTENHA-OS IDÊNTICOS.
-        4. Mantenha o restante da frase (incluindo pontuação, quebra de linha e estrutura) EXATAMENTE IDÊNTICO ao original.
-        5. Mantenha o texto de saída no **mesmo idioma** da "Mensagem Original".
-        6. NÃO use aspas, comentários ou explicações na resposta. Apenas o texto puro da mensagem reescrita.
+        1. **MUDANÇA ÚNICA E ALEATÓRIA:** Você DEVE selecionar APENAS UMA ÚNICA PALAVRA da "Mensagem Original" e substituí-la por um sinônimo. O sinônimo e a palavra escolhida DEVERÃO ser selecionados de forma **randômica** a cada vez que este prompt for processado. A alteração é compulsória.
+        2. **PRIORIDADE DE PERSONALIZAÇÃO:** Se a "Mensagem Original" contiver variáveis ou referências de nome de usuário (como {nome}, {username}, ou qualquer texto que claramente se refira ao destinatário), substitua **todas** essas referências pela variável de destino **"${globalname}"**. Esta substituição não conta como a mudança única da Regra 1.
+        3. Mantenha EXATAMENTE o mesmo significado, tom e intenção da "Mensagem Original".
+        4. Se houver links (http...), MANTENHA-OS IDÊNTICOS.
+        5. Mantenha o restante da frase (incluindo pontuação, quebra de linha e estrutura) EXATAMENTE IDÊNTICO ao original.
+        6. Mantenha o texto de saída no **mesmo idioma** da "Mensagem Original".
+        7. NÃO use aspas, comentários ou explicações na resposta. Apenas o texto puro da mensagem reescrita.
 
         Mensagem Original: "${originalText}"
         `;
-        
+                
         const result = await model.generateContent(prompt);
         const response = await result.response;
         let text = response.text();
@@ -637,7 +642,8 @@ async function finalizeSending() {
         .setColor(embedColor)
         .addFields(
             { name: "✅ Sucesso", value: `${stats.success}`, inline: true },
-            { name: "❌ Falhas", value: `${stats.fail}`, inline: true },
+            { name: "❌ Falhas (Erro)", value: `${stats.fail}`, inline: true },
+            { name: "🚫 DMs Fechadas", value: `${stats.closed}`, inline: true },
             { name: "⏳ Pendentes", value: `${remaining}`, inline: true }
         );
 
@@ -655,10 +661,36 @@ async function finalizeSending() {
         try {
             const ch = await client.channels.fetch(state.progressMessageRef.channelId);
             const msg = await ch.messages.fetch(state.progressMessageRef.messageId);
-            await msg.edit({ content: finalText, embeds: [embed] }).catch(async () => {
-                await ch.send({ content: finalText, embeds: [embed] });
+            
+            // Tenta editar a mensagem original
+            await msg.edit({ content: finalText, embeds: [embed] }).catch(async (err) => {
+                 // 🚨 FALLBACK: Se falhar a edição
+                 if (state.privacyMode === 'public') {
+                     // Modo Público: Envia nova mensagem no canal
+                     console.warn("⚠️ Falha ao editar msg final. Enviando nova (PÚBLICA)...", err.message);
+                     await ch.send({ content: finalText, embeds: [embed] });
+                 } else {
+                     // 🔒 Modo Privado: Envia para a DM do usuário que iniciou
+                     console.warn("🔒 Falha ao editar msg final em modo privado. Tentando enviar DM de fallback...");
+                     if (state.initiatorId) {
+                         try {
+                             const user = await client.users.fetch(state.initiatorId);
+                             await user.send({ 
+                                 content: `⚠️ **Relatório Final (Fallback Privado)**\n*A mensagem original no servidor expirou ou foi deletada.*\n\n${finalText}`, 
+                                 embeds: [embed] 
+                             });
+                             console.log(`✅ Relatório de backup enviado na DM de ${user.tag}`);
+                         } catch (dmErr) {
+                             console.error("❌ Falha crítica: Não foi possível enviar o relatório nem na DM.", dmErr.message);
+                         }
+                     } else {
+                         console.error("❌ ID do iniciador não encontrado para fallback de DM.");
+                     }
+                 }
             });
-        } catch (e) {}
+        } catch (e) {
+            console.error("❌ Erro ao finalizar envio:", e.message);
+        }
     }
 
     await stateManager.modify(s => s.currentAnnounceGuildId = null);
@@ -716,6 +748,8 @@ async function unifiedReply(ctx, content, embeds = []) {
 async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
+    const isSlash = ctx.isChatInputCommand?.();
+    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; // 🆕 Captura ID do autor
     
     const gd = ensureGuildData(state, guildId);
 
@@ -771,6 +805,9 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.ignore = parsed.ignore;
         s.only = parsed.only;
         
+        s.privacyMode = isSlash ? 'private' : 'public';
+        s.initiatorId = initiatorId; // 🆕 Salva ID
+        
         const gData = ensureGuildData(s, guildId);
         gData.lastRunText = text || "";
         gData.lastRunAttachments = attachments;
@@ -781,7 +818,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     
     let progressMsg;
     if (ctx.isChatInputCommand?.()) {
-        // 🚨 NOVO: Se for Slash Command, usa deferReply e editReply para evitar timeout
         await ctx.deferReply({ ephemeral: true });
         progressMsg = await unifiedReply(ctx, msgContent);
     } else {
@@ -801,6 +837,8 @@ async function execResume(ctx, attachmentUrl) {
 
     let stateToLoad = null;
     let resumeSource = "local";
+    const isSlash = ctx.isChatInputCommand?.();
+    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; // 🆕 Captura ID do autor
 
     if (attachmentUrl) {
         const jsonResult = await readAttachmentJSON(attachmentUrl);
@@ -843,6 +881,9 @@ async function execResume(ctx, attachmentUrl) {
         st.attachments = attachToSend || [];
         st.currentRunStats = { success: 0, fail: 0, closed: 0 };
         
+        st.privacyMode = isSlash ? 'private' : 'public';
+        st.initiatorId = initiatorId; // 🆕 Salva ID
+
         const g = ensureGuildData(st, ctx.guild.id);
         g.pendingQueue = [];
         g.failedQueue = [];
@@ -869,7 +910,7 @@ async function execUpdate(ctx) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
 
-    // 🛡️ Inicializa dados se não existirem (essencial para evitar crash ao ler .lastRunText)
+    // 🛡️ Inicializa dados se não existirem
     const gd = ensureGuildData(state, guildId);
 
     // 1. Verifica contexto básico
@@ -877,7 +918,7 @@ async function execUpdate(ctx) {
          return unifiedReply(ctx, "❌ Nenhuma campanha recente para atualizar.");
     }
     
-    // 🚨 NOVO: Defer Reply para Slash Commands
+    // 🚨 DEFER REPLY
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
     }
@@ -888,7 +929,6 @@ async function execUpdate(ctx) {
     if (!ctx.isChatInputCommand?.()) {
          unifiedReply(ctx, initialReply);
     } else if (!ctx.replied && !ctx.deferred) {
-        // Isso só deve rodar se o defer acima falhar, mas é uma segurança.
         await unifiedReply(ctx, initialReply); 
     }
 
@@ -936,7 +976,6 @@ async function execUpdate(ctx) {
 }
 
 async function execStop(ctx) {
-    // 🚨 NOVO: Defer Reply para Slash Commands
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
     }
@@ -947,7 +986,6 @@ async function execStop(ctx) {
 }
 
 async function execStatus(ctx) {
-    // 🚨 NOVO: Defer Reply para Slash Commands
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
     }
@@ -963,7 +1001,8 @@ async function execStatus(ctx) {
         .addFields(
             { name: "Estado", value: isActive ? "🟢 Ativo" : "⚪ Parado", inline: true },
             { name: "Pendentes", value: `${gd.pendingQueue?.length || 0}`, inline: true },
-            { name: "Fila Atual", value: `${state.queue.length}`, inline: true }
+            { name: "Fila Atual", value: `${state.queue.length}`, inline: true },
+            { name: "🚫 DMs Fechadas", value: `${gd.blockedDMs.length}`, inline: true }
         );
         
     unifiedReply(ctx, "", [embed]);
@@ -999,7 +1038,6 @@ async function registerSlashCommands() {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         console.log('Registrando Slash Commands...');
-        // 🚨 CRÍTICO: Use o ID do bot para registrar os comandos globalmente
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log('✅ Slash Commands Registrados!');
     } catch (e) { 
@@ -1027,7 +1065,6 @@ client.on('interactionCreate', async interaction => {
             const arquivo = interaction.options.getAttachment('arquivo');
             await execResume(interaction, arquivo ? arquivo.url : null);
         } else if (commandName === 'update') {
-            // 🚨 NOVO: Execução do update
             await execUpdate(interaction);
         } else if (commandName === 'stop') {
             await execStop(interaction);
