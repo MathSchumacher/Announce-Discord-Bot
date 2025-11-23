@@ -901,47 +901,93 @@ client.on("messageCreate", async (message) => {
         return message.reply(`➕ Adicionados **${newIds.length}** membros.`);
     }
 
+    // --- COMANDO: RESUME ---
     if (isResume) {
-        if (state.active) return message.reply("⚠️ Já existe um envio ativo.");
+        if (state.active) {
+            return message.reply("⚠️ Já existe um envio ativo globalmente");
+        }
+
         let stateToLoad = null;
         let resumeSource = "local";
 
+        // 1. Verifica e processa o anexo JSON
         if (message.attachments.size > 0) {
             const jsonResult = await readAttachmentJSON(message);
-            if (!jsonResult.success) return message.reply(jsonResult.error);
-            if (jsonResult.state.currentAnnounceGuildId !== guildId) return message.reply("❌ Arquivo de outro servidor.");
+            if (!jsonResult.success) {
+                return message.reply(jsonResult.error);
+            }
+            
+            if (jsonResult.state.currentAnnounceGuildId !== guildId) {
+                return message.reply("❌ O arquivo de estado pertence a outro servidor.");
+            }
+            
             stateToLoad = jsonResult.state;
             resumeSource = "anexo";
         }
         
+        // 2. Carrega o estado do JSON para a memória (se houver)
         if (stateToLoad) {
             const tempState = stateManager.load(stateToLoad);
             if (!tempState) return message.reply("❌ Erro ao carregar arquivo.");
+            // Mescla o estado do arquivo com o estado atual
             await stateManager.modify(s => Object.assign(s, tempState));
         }
         
-        const currentGd = stateManager.state.guildData[guildId];
-        const allIds = [...new Set([...currentGd.pendingQueue, ...currentGd.failedQueue])]
-            .filter(id => !currentGd.blockedDMs.includes(id));
+        const currentState = stateManager.state;
+        const currentGd = currentState.guildData[guildId];
 
-        if (allIds.length === 0) return message.reply(`✅ Nenhum membro para retomar.`);
+        // === CORREÇÃO CRÍTICA AQUI ===
+        // Reconstrói a fila somando:
+        // 1. currentState.queue (IDs que vieram dentro do JSON)
+        // 2. currentGd.pendingQueue (IDs que estavam na memória pendentes)
+        // 3. currentGd.failedQueue (IDs que falharam antes)
+        const allIds = [...new Set([
+            ...currentState.queue, 
+            ...currentGd.pendingQueue, 
+            ...currentGd.failedQueue
+        ])].filter(id => !currentGd.blockedDMs.includes(id)); // Filtra quem bloqueou DM
 
+        if (allIds.length === 0) {
+            return message.reply(`✅ Nenhum membro válido para retomar (${resumeSource}).`);
+        }
+
+        // Verifica se tem texto/anexo para enviar (prioriza o do JSON, senão pega o da memória)
+        const textToSend = currentState.text || currentGd.lastRunText;
+        const attachToSend = (currentState.attachments && currentState.attachments.length > 0) 
+            ? currentState.attachments 
+            : currentGd.lastRunAttachments;
+
+        if (!textToSend && (!attachToSend || attachToSend.length === 0)) {
+            return message.reply("❌ Dados da campanha (texto/imagem) perdidos ou vazios.");
+        }
+
+        // 3. Atualiza o estado para iniciar
         await stateManager.modify(s => {
             s.active = true;
-            s.quarantine = false;
+            s.quarantine = false; // Reseta flag de quarentena
             s.currentAnnounceGuildId = guildId;
-            s.text = currentGd.lastRunText || "";
-            s.attachments = currentGd.lastRunAttachments || [];
-            s.queue = allIds;
+            
+            // Garante que o texto e anexo ativos sejam os corretos
+            s.text = textToSend;
+            s.attachments = attachToSend || [];
+            
+            s.queue = allIds; // Define a fila completa
             s.currentRunStats = { success: 0, fail: 0, closed: 0 };
+            
+            // Limpa as filas de espera da memória, pois já foram movidas para a fila ativa
             s.guildData[guildId].pendingQueue = [];
             s.guildData[guildId].failedQueue = [];
         });
 
-        const progressMsg = await message.reply(`🔄 Retomando envio para **${allIds.length}** membros...`);
+        const progressMsg = await message.reply(`🔄 Retomando envio (${resumeSource}) para **${allIds.length}** membros...`);
+        
         await stateManager.modify(s => {
-            s.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id };
+            s.progressMessageRef = {
+                channelId: progressMsg.channel.id,
+                messageId: progressMsg.id
+            };
         });
+
         startProgressUpdater();
         startWorker();
         return;
