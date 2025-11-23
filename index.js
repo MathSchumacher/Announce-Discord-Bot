@@ -40,31 +40,26 @@ console.log(`🌍 Ambiente Detectado: ${IS_LOCAL ? 'LOCAL (PC - Testes Rápidos)
 
 const RETRY_LIMIT = 3;
 const STATE_FILE = path.resolve(__dirname, "state.json");
-const PROGRESS_UPDATE_INTERVAL = 5000;
 const TARGET_EMAIL = process.env.TARGET_EMAIL || "matheusmschumacher@gmail.com";
 
 let currentDelayBase = 22000;
 let currentBatchBase = 14;
 
-// NOVOS VALORES AGRESSIVOS MAS SEGUROS
-const DELAY_RANDOM_MS = 22000;        // +0 a +22s → média final 16–28s
-const BATCH_VARIANCE = 8;             // agora 6–22 mensagens por lote
-const MIN_BATCH_PAUSE_MS = 9  * 60 * 1000;  // 9 minutos
-const MAX_BATCH_PAUSE_MS = 18 * 60 * 1000;  // 18 minutos
+const DELAY_RANDOM_MS = 22000;        
+const BATCH_VARIANCE = 8;             
+const MIN_BATCH_PAUSE_MS = 9  * 60 * 1000;  
+const MAX_BATCH_PAUSE_MS = 18 * 60 * 1000;  
 
-const EXTRA_LONG_DELAY_CHANCE = 0.18;  // 18% das mensagens
-const EXTRA_LONG_DELAY_MS     = 35000; // +35s base
+const EXTRA_LONG_DELAY_CHANCE = 0.18;  
+const EXTRA_LONG_DELAY_MS     = 35000; 
 
-// === FILTROS DE QUALIDADE DE CONTA ===
 const MIN_ACCOUNT_AGE_DAYS = 30; 
 const IGNORE_NO_AVATAR = true;   
 
-// === SISTEMA DE COOLDOWN DINÂMICO ===
 const GUILD_COOLDOWN_MIN_HOURS = 6;
 const GUILD_COOLDOWN_MIN_MS = GUILD_COOLDOWN_MIN_HOURS * 3600000;
 const COOLDOWN_PENALTY_MS_PER_USER = 2000; 
 
-// === PROTEÇÃO CONTRA SOFT-BAN ===
 const SAVE_THRESHOLD = 5; 
 const MEMBER_CACHE_TTL = 5 * 60 * 1000; 
 const SOFT_BAN_THRESHOLD = 0.4; 
@@ -249,10 +244,8 @@ const client = new Client({
     partials: [Partials.Channel]
 });
 
-let progressMessageRuntime = null;
 let progressUpdaterHandle = null;
 let workerRunning = false;
-let lastEmbedState = null;
 const memberCache = new Map();
 
 // ============================================================================
@@ -260,6 +253,21 @@ const memberCache = new Map();
 // ============================================================================
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
+
+// 🛡️ FUNÇÃO DE SEGURANÇA PARA DADOS DA GUILDA
+function ensureGuildData(state, guildId) {
+    if (!state.guildData[guildId]) {
+        state.guildData[guildId] = {
+            processedMembers: [],
+            blockedDMs: [],
+            failedQueue: [],
+            pendingQueue: [],
+            lastRunText: "",
+            lastRunAttachments: []
+        };
+    }
+    return state.guildData[guildId];
+}
 
 function randomizeParameters() {
     if (IS_LOCAL) {
@@ -306,17 +314,6 @@ function parseSelectors(text) {
     const cleaned = text.replace(regex, "").trim();
     const hasForce = /\bforce\b/i.test(cleaned);
     return { cleaned: hasForce ? cleaned.replace(/\bforce\b/i, '').trim() : cleaned, ignore, only, hasForce };
-}
-
-function validateAttachments(attachments) {
-    const MAX_SIZE = 8 * 1024 * 1024; 
-    const ALLOWED = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.pdf', '.webm'];
-    for (const att of attachments) {
-        if (att.size > MAX_SIZE) return { valid: false, error: `❌ Arquivo > 8MB` };
-        const ext = path.extname(att.name).toLowerCase();
-        if (!ALLOWED.includes(ext)) return { valid: false, error: `❌ Tipo inválido: ${ext}` };
-    }
-    return { valid: true };
 }
 
 async function getCachedMembers(guild) {
@@ -368,7 +365,7 @@ async function getAiVariation(originalText, globalname) {
         1. Mantenha EXATAMENTE o mesmo significado e intenção da "Mensagem Original".
         2. Se houver links (http...), MANTENHA-OS IDÊNTICOS.
         3. Mantenha o texto de saída no **mesmo idioma** da "Mensagem Original".
-        4. **CRÍTICO:** Sua única função é fazer uma alteração pontual: **Troque APENAS UMA ÚNICA PALAVRA ou a saudação inicial por um sinônimo**. Mantenha o restante da frase (incluindo pontuação e estrutura) idêntico ao original.
+        4. **CRÍTICO:** Sua única função é fazer uma alteração pontual: **Troque APENAS UMA ÚNICA PALAVRA por um sinônimo**. Mantenha o restante da frase (incluindo pontuação e estrutura) idêntico ao original.
         5. NÃO use aspas na resposta. Apenas o texto puro.
 
         Mensagem Original: "${originalText}"
@@ -390,7 +387,7 @@ async function getAiVariation(originalText, globalname) {
 }
 
 // ============================================================================
-// 📨 FUNÇÃO DE ENVIO (SINGLE PAYLOAD - MAIS SEGURO)
+// 📨 FUNÇÃO DE ENVIO
 // ============================================================================
 
 async function sendStealthDM(user, rawText, attachments) {
@@ -459,14 +456,21 @@ async function sendStealthDM(user, rawText, attachments) {
 }
 
 // ============================================================================
-// 🏭 WORKER LOOP (O MOTOR DO BOT)
+// 🏭 WORKER LOOP
 // ============================================================================
 
 async function workerLoop() {
     console.log("🚀 Worker Iniciado");
     const state = stateManager.state;
     const guildId = state.currentAnnounceGuildId;
-    const gd = state.guildData[guildId] || {};
+    
+    // 🛡️ SEGURANÇA: Garante que dados existam
+    if (!guildId || !state.guildData[guildId]) {
+        console.error("⚠️ Worker iniciou sem guilda válida.");
+        return;
+    }
+    
+    const gd = state.guildData[guildId];
 
     try {
         let sentInBatch = 0;
@@ -481,7 +485,6 @@ async function workerLoop() {
                     : MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * (MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS));
 
                 console.log(`Lote concluído. Pausa de ${(pauseDuration/60000).toFixed(1)} minutos.`);
-                console.log(`⏸️ Lote fim. Pausa ${(pauseDuration/1000).toFixed(0)}s.`);
                 
                 stateManager.forceSave();
                 await updateProgressEmbed();
@@ -509,6 +512,8 @@ async function workerLoop() {
                 catch (e) {
                     console.log(`⏭️ Inacessível: ${userId}`);
                     await stateManager.modify(s => {
+                          // 🛡️ SEGURANÇA
+                          ensureGuildData(s, guildId);
                           if (!s.guildData[guildId].processedMembers.includes(userId)) s.guildData[guildId].processedMembers.push(userId);
                     });
                     continue;
@@ -523,7 +528,9 @@ async function workerLoop() {
             const result = await sendStealthDM(user, state.text, state.attachments);
 
             await stateManager.modify(s => {
-                const gData = s.guildData[guildId];
+                // 🛡️ SEGURANÇA
+                const gData = ensureGuildData(s, guildId);
+                
                 if (result.success) {
                     s.currentRunStats.success++;
                     const idx = gData.failedQueue.indexOf(userId);
@@ -609,7 +616,10 @@ async function finalizeSending() {
     const guildId = state.currentAnnounceGuildId;
     
     await stateManager.modify(s => {
-        if (guildId && s.queue.length > 0) s.guildData[guildId].pendingQueue.push(...s.queue);
+        if (guildId) {
+            const gData = ensureGuildData(s, guildId);
+            if (s.queue.length > 0) gData.pendingQueue.push(...s.queue);
+        }
         s.queue = [];
         s.active = false;
     });
@@ -687,7 +697,7 @@ function calculateCooldownInfo(guildData) {
 }
 
 // ============================================================================
-// 🎮 LÓGICA CENTRAL DOS COMANDOS (AGNOSTICA À ENTRADA)
+// 🎮 LÓGICA CENTRAL DOS COMANDOS
 // ============================================================================
 
 async function unifiedReply(ctx, content, embeds = []) {
@@ -703,7 +713,9 @@ async function unifiedReply(ctx, content, embeds = []) {
 async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
-    const gd = state.guildData[guildId];
+    
+    // 🛡️ SEGURANÇA: Inicializa dados se não existirem
+    const gd = ensureGuildData(state, guildId);
 
     if (state.active) return unifiedReply(ctx, "❌ Já existe um envio ativo.");
 
@@ -723,8 +735,10 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
 
     if (totalRemaining > 0 && parsed.hasForce) {
         await stateManager.modify(s => {
-            s.guildData[guildId].pendingQueue = [];
-            s.guildData[guildId].failedQueue = [];
+            // 🛡️ SEGURANÇA
+            const g = ensureGuildData(s, guildId);
+            g.pendingQueue = [];
+            g.failedQueue = [];
         });
     }
 
@@ -756,7 +770,8 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.ignore = parsed.ignore;
         s.only = parsed.only;
         
-        const gData = s.guildData[guildId];
+        // 🛡️ SEGURANÇA
+        const gData = ensureGuildData(s, guildId);
         gData.lastRunText = text || "";
         gData.lastRunAttachments = attachments;
         gData.processedMembers = [...processedSet];
@@ -801,7 +816,8 @@ async function execResume(ctx, attachmentUrl) {
     }
 
     const s = stateManager.state;
-    const gd = s.guildData[ctx.guild.id];
+    // 🛡️ SEGURANÇA
+    const gd = ensureGuildData(s, ctx.guild.id);
     
     const allIds = [...new Set([
         ...s.queue, 
@@ -826,8 +842,11 @@ async function execResume(ctx, attachmentUrl) {
         st.text = textToSend;
         st.attachments = attachToSend || [];
         st.currentRunStats = { success: 0, fail: 0, closed: 0 };
-        st.guildData[ctx.guild.id].pendingQueue = [];
-        st.guildData[ctx.guild.id].failedQueue = [];
+        
+        // 🛡️ SEGURANÇA
+        const g = ensureGuildData(st, ctx.guild.id);
+        g.pendingQueue = [];
+        g.failedQueue = [];
     });
 
     const msgContent = `🔄 Retomando envio (${resumeSource}) para **${allIds.length}** membros...`;
@@ -847,36 +866,31 @@ async function execResume(ctx, attachmentUrl) {
     startWorker();
 }
 
-// 🆕 COMANDO DE UPDATE (ADICIONA NOVOS MEMBROS À FILA)
 async function execUpdate(ctx) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
-    const gd = state.guildData[guildId];
+
+    // 🛡️ SEGURANÇA: Garante que existe o objeto, para não quebrar ao ler .lastRunText
+    const gd = ensureGuildData(state, guildId);
 
     // 1. Verifica contexto básico
-    // Se não há campanha ativa E não há texto salvo, não há o que atualizar
     if (!state.currentAnnounceGuildId && !gd.lastRunText) {
          return unifiedReply(ctx, "❌ Nenhuma campanha recente para atualizar.");
     }
 
-    // Se estiver ativo, o alvo é a guilda ativa. Se estiver parado, é a guilda do comando.
     const targetGuildId = state.currentAnnounceGuildId || guildId;
     
     unifiedReply(ctx, "🔄 Verificando novos membros...");
 
-    // 2. Força atualização dos membros da guilda (fetch)
     await ctx.guild.members.fetch();
     const members = ctx.guild.members.cache;
 
-    // 3. Recupera restrições (filtros) salvos no estado
-    // Converte para Set caso esteja como Array no JSON
     const ignoreSet = state.ignore instanceof Set ? state.ignore : new Set(state.ignore || []);
     const onlySet = state.only instanceof Set ? state.only : new Set(state.only || []);
 
-    // 4. Identifica novos alvos
     const newIds = [];
     
-    // Cria um conjunto com TODOS que já foram tocados de alguma forma
+    // 🛡️ SEGURANÇA: Usa o 'gd' que garantimos existir
     const knownIds = new Set([
         ...gd.processedMembers,
         ...gd.blockedDMs,
@@ -888,10 +902,8 @@ async function execUpdate(ctx) {
     for (const [id, m] of members) {
         if (m.user.bot) continue;
         
-        // Se já conhecemos (já enviou, falhou ou está na fila), pula
         if (knownIds.has(id)) continue;
         
-        // Respeita os filtros definidos no comando original
         if (onlySet.size > 0 && !onlySet.has(id)) continue;
         if (ignoreSet.has(id)) continue;
 
@@ -902,14 +914,13 @@ async function execUpdate(ctx) {
         return unifiedReply(ctx, "✅ Lista já está 100% atualizada. Ninguém novo encontrado.");
     }
 
-    // 5. Atualiza o Estado
     await stateManager.modify(s => {
-        // Se estiver ATIVO e rodando nessa guilda, adiciona na fila IMEDIATA
         if (s.active && s.currentAnnounceGuildId === targetGuildId) {
             s.queue.push(...newIds);
         } else {
-            // Se estiver PARADO, adiciona na fila PENDENTE (para o próximo resume)
-            s.guildData[targetGuildId].pendingQueue.push(...newIds);
+            // 🛡️ SEGURANÇA: Garante o objeto antes de push
+            const g = ensureGuildData(s, targetGuildId);
+            g.pendingQueue.push(...newIds);
         }
     });
 
@@ -924,7 +935,9 @@ async function execStop(ctx) {
 
 async function execStatus(ctx) {
     const state = stateManager.state;
-    const gd = state.guildData[ctx.guild.id] || {};
+    // 🛡️ SEGURANÇA
+    const gd = ensureGuildData(state, ctx.guild.id);
+    
     const isActive = state.active && state.currentAnnounceGuildId === ctx.guild.id;
     
     const embed = new EmbedBuilder()
