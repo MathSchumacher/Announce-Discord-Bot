@@ -152,7 +152,7 @@ class StateManager {
             quarantine: false,
             currentAnnounceGuildId: null,
             privacyMode: "public", 
-            initiatorId: null, // 🆕 Salva quem iniciou para mandar DM se falhar
+            initiatorId: null, 
             guildData: {} 
         };
     }
@@ -662,29 +662,24 @@ async function finalizeSending() {
             const ch = await client.channels.fetch(state.progressMessageRef.channelId);
             const msg = await ch.messages.fetch(state.progressMessageRef.messageId);
             
-            // Tenta editar a mensagem original
+            // Edita a mensagem onde ela estiver (DM ou Canal)
             await msg.edit({ content: finalText, embeds: [embed] }).catch(async (err) => {
-                 // 🚨 FALLBACK: Se falhar a edição
+                 // Fallback se falhar editar
                  if (state.privacyMode === 'public') {
-                     // Modo Público: Envia nova mensagem no canal
                      console.warn("⚠️ Falha ao editar msg final. Enviando nova (PÚBLICA)...", err.message);
                      await ch.send({ content: finalText, embeds: [embed] });
                  } else {
-                     // 🔒 Modo Privado: Envia para a DM do usuário que iniciou
-                     console.warn("🔒 Falha ao editar msg final em modo privado. Tentando enviar DM de fallback...");
+                     console.warn("🔒 Falha ao editar msg final na DM. Enviando nova...");
                      if (state.initiatorId) {
                          try {
                              const user = await client.users.fetch(state.initiatorId);
                              await user.send({ 
-                                 content: `⚠️ **Relatório Final (Fallback Privado)**\n*A mensagem original no servidor expirou ou foi deletada.*\n\n${finalText}`, 
+                                 content: `⚠️ **Relatório Final (Fallback)**\n${finalText}`, 
                                  embeds: [embed] 
                              });
-                             console.log(`✅ Relatório de backup enviado na DM de ${user.tag}`);
                          } catch (dmErr) {
-                             console.error("❌ Falha crítica: Não foi possível enviar o relatório nem na DM.", dmErr.message);
+                             console.error("❌ Falha crítica: Não foi possível enviar o relatório na DM.", dmErr.message);
                          }
-                     } else {
-                         console.error("❌ ID do iniciador não encontrado para fallback de DM.");
                      }
                  }
             });
@@ -706,7 +701,7 @@ async function updateProgressEmbed() {
         const embed = new EmbedBuilder()
             .setTitle("📨 Enviando...")
             .setColor("#00AEEF")
-            .setDescription(`Fila: ${state.queue.length} | Sucesso: ${state.currentRunStats.success}`);
+            .setDescription(`Fila: ${state.queue.length} | Sucesso: ${state.currentRunStats.success} | Fechadas: ${state.currentRunStats.closed}`);
         await msg.edit({ embeds: [embed] });
     } catch (e) {}
 }
@@ -749,7 +744,7 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
     const isSlash = ctx.isChatInputCommand?.();
-    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; // 🆕 Captura ID do autor
+    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; 
     
     const gd = ensureGuildData(state, guildId);
 
@@ -806,7 +801,7 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.only = parsed.only;
         
         s.privacyMode = isSlash ? 'private' : 'public';
-        s.initiatorId = initiatorId; // 🆕 Salva ID
+        s.initiatorId = initiatorId; 
         
         const gData = ensureGuildData(s, guildId);
         gData.lastRunText = text || "";
@@ -818,9 +813,30 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     
     let progressMsg;
     if (ctx.isChatInputCommand?.()) {
+        // 🚨 LÓGICA MODIFICADA: SE SLASH, ENVIA PAINEL NA DM
         await ctx.deferReply({ ephemeral: true });
-        progressMsg = await unifiedReply(ctx, msgContent);
+        
+        try {
+            const dmChannel = await ctx.user.createDM();
+            const dmEmbed = new EmbedBuilder()
+                .setTitle("📨 Enviando...")
+                .setColor("#00AEEF")
+                .setDescription(`Fila: ${queue.length} | Sucesso: 0`);
+            
+            // Envia o painel real na DM
+            progressMsg = await dmChannel.send({ content: msgContent, embeds: [dmEmbed] });
+            
+            // Responde no Slash apenas confirmando
+            await ctx.editReply({ content: "✅ Painel de controle enviado para sua DM! Acompanhe por lá." });
+        } catch (e) {
+            console.error("Erro ao enviar DM inicial:", e);
+            await ctx.editReply({ content: "❌ Não consegui te enviar DM. Abra suas DMs e tente novamente." });
+            await stateManager.modify(s => s.active = false);
+            return;
+        }
+
     } else {
+        // LÓGICA PADRÃO: Envia no canal (Prefixo)
         progressMsg = await unifiedReply(ctx, msgContent);
     }
 
@@ -838,7 +854,7 @@ async function execResume(ctx, attachmentUrl) {
     let stateToLoad = null;
     let resumeSource = "local";
     const isSlash = ctx.isChatInputCommand?.();
-    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; // 🆕 Captura ID do autor
+    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; 
 
     if (attachmentUrl) {
         const jsonResult = await readAttachmentJSON(attachmentUrl);
@@ -882,7 +898,7 @@ async function execResume(ctx, attachmentUrl) {
         st.currentRunStats = { success: 0, fail: 0, closed: 0 };
         
         st.privacyMode = isSlash ? 'private' : 'public';
-        st.initiatorId = initiatorId; // 🆕 Salva ID
+        st.initiatorId = initiatorId; 
 
         const g = ensureGuildData(st, ctx.guild.id);
         g.pendingQueue = [];
@@ -893,8 +909,24 @@ async function execResume(ctx, attachmentUrl) {
     let progressMsg;
     
     if (ctx.isChatInputCommand?.()) {
+        // 🚨 LÓGICA MODIFICADA: SE SLASH, ENVIA PAINEL NA DM
         await ctx.deferReply({ ephemeral: true });
-        progressMsg = await unifiedReply(ctx, msgContent);
+        
+        try {
+            const dmChannel = await ctx.user.createDM();
+            const dmEmbed = new EmbedBuilder()
+                .setTitle("📨 Retomando...")
+                .setColor("#00AEEF")
+                .setDescription(`Fila: ${allIds.length} | Sucesso: 0`);
+            
+            progressMsg = await dmChannel.send({ content: msgContent, embeds: [dmEmbed] });
+            await ctx.editReply({ content: "✅ Painel de retomada enviado para sua DM!" });
+        } catch (e) {
+            console.error("Erro DM Resume:", e);
+            await ctx.editReply({ content: "❌ Erro ao enviar DM. Verifique suas configurações." });
+            await stateManager.modify(s => s.active = false);
+            return;
+        }
     } else {
         progressMsg = await unifiedReply(ctx, msgContent);
     }
@@ -904,75 +936,6 @@ async function execResume(ctx, attachmentUrl) {
     });
     startProgressUpdater();
     startWorker();
-}
-
-async function execUpdate(ctx) {
-    const guildId = ctx.guild.id;
-    const state = stateManager.state;
-
-    // 🛡️ Inicializa dados se não existirem
-    const gd = ensureGuildData(state, guildId);
-
-    // 1. Verifica contexto básico
-    if (!state.currentAnnounceGuildId && !gd.lastRunText) {
-         return unifiedReply(ctx, "❌ Nenhuma campanha recente para atualizar.");
-    }
-    
-    // 🚨 DEFER REPLY
-    if (ctx.isChatInputCommand?.()) {
-        await ctx.deferReply({ ephemeral: true });
-    }
-
-    const targetGuildId = state.currentAnnounceGuildId || guildId;
-    
-    const initialReply = "🔄 Verificando novos membros...";
-    if (!ctx.isChatInputCommand?.()) {
-         unifiedReply(ctx, initialReply);
-    } else if (!ctx.replied && !ctx.deferred) {
-        await unifiedReply(ctx, initialReply); 
-    }
-
-    await ctx.guild.members.fetch();
-    const members = ctx.guild.members.cache;
-
-    const ignoreSet = state.ignore instanceof Set ? state.ignore : new Set(state.ignore || []);
-    const onlySet = state.only instanceof Set ? state.only : new Set(state.only || []);
-
-    const newIds = [];
-    
-    const knownIds = new Set([
-        ...gd.processedMembers,
-        ...gd.blockedDMs,
-        ...gd.failedQueue,
-        ...gd.pendingQueue,
-        ...state.queue
-    ]);
-
-    for (const [id, m] of members) {
-        if (m.user.bot) continue;
-        
-        if (knownIds.has(id)) continue;
-        
-        if (onlySet.size > 0 && !onlySet.has(id)) continue;
-        if (ignoreSet.has(id)) continue;
-
-        newIds.push(id);
-    }
-
-    if (newIds.length === 0) {
-        return unifiedReply(ctx, "✅ Lista já está 100% atualizada. Ninguém novo encontrado.");
-    }
-
-    await stateManager.modify(s => {
-        if (s.active && s.currentAnnounceGuildId === targetGuildId) {
-            s.queue.push(...newIds);
-        } else {
-            const g = ensureGuildData(s, targetGuildId);
-            g.pendingQueue.push(...newIds);
-        }
-    });
-
-    return unifiedReply(ctx, `🆕 **Atualizado!** Adicionados +${newIds.length} novos membros à fila.`);
 }
 
 async function execStop(ctx) {
@@ -1025,9 +988,6 @@ async function registerSlashCommands() {
             .setDescription('Retoma envio (Invisível)')
             .addAttachmentOption(opt => opt.setName('arquivo').setDescription('JSON Backup')),
         new SlashCommandBuilder()
-            .setName('update')
-            .setDescription('Busca novos membros e adiciona à fila (Invisível)'),
-        new SlashCommandBuilder()
             .setName('stop')
             .setDescription('Para o envio (Invisível)'),
         new SlashCommandBuilder()
@@ -1064,8 +1024,6 @@ client.on('interactionCreate', async interaction => {
         } else if (commandName === 'resume') {
             const arquivo = interaction.options.getAttachment('arquivo');
             await execResume(interaction, arquivo ? arquivo.url : null);
-        } else if (commandName === 'update') {
-            await execUpdate(interaction);
         } else if (commandName === 'stop') {
             await execStop(interaction);
         } else if (commandName === 'status') {
@@ -1099,8 +1057,6 @@ client.on("messageCreate", async (message) => {
     } else if (cmd === 'resume') {
         const attachment = message.attachments.first();
         await execResume(message, attachment ? attachment.url : null);
-    } else if (cmd === 'update') {
-        await execUpdate(message);
     } else if (cmd === 'stop') {
         await execStop(message);
     } else if (cmd === 'status') {
