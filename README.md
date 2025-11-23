@@ -1,4 +1,4 @@
-﻿# **🚀 Announce Discord Bot: **Envio de DMs em massa****
+﻿﻿# **🚀 Announce Discord Bot: **Envio de DMs em massa****
 <p align="center">
 <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js">
 <img src="https://img.shields.io/badge/Discord.js-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord.js">
