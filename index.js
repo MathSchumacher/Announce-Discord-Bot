@@ -263,7 +263,12 @@ function ensureGuildData(state, guildId) {
             failedQueue: [],
             pendingQueue: [],
             lastRunText: "",
-            lastRunAttachments: []
+            lastRunAttachments: [],
+            // Adicionado para evitar erro em calculateCooldownInfo (se for usado)
+            lastAnnounceTime: 0,
+            totalSuccess: 0,
+            totalClosed: 0,
+            totalFail: 0
         };
     }
     return state.guildData[guildId];
@@ -359,14 +364,15 @@ async function getAiVariation(originalText, globalname) {
     if (!model || !originalText || originalText.length < 3) return originalText;
     try {
         const prompt = `
-        Aja como um assistente de comunicação minimalista e eficiente. Reescreva a mensagem abaixo para a pessoa chamada "${globalname}".
-        
-        Regras:
-        1. Mantenha EXATAMENTE o mesmo significado e intenção da "Mensagem Original".
-        2. Se houver links (http...), MANTENHA-OS IDÊNTICOS.
-        3. Mantenha o texto de saída no **mesmo idioma** da "Mensagem Original".
-        4. **CRÍTICO:** Sua única função é fazer uma alteração pontual: **Troque APENAS UMA ÚNICA PALAVRA por um sinônimo**. Mantenha o restante da frase (incluindo pontuação e estrutura) idêntico ao original.
-        5. NÃO use aspas na resposta. Apenas o texto puro.
+        Aja como um **Micro-Editor de Texto** com a **única e CRÍTICA função** de realizar uma alteração pontual na mensagem abaixo, que se destina a "${globalname}".
+
+        **Regras de Saída (Siga-as Rigorosamente):**
+        1. **MUDANÇA OBRIGATÓRIA:** Você DEVE selecionar APENAS UMA ÚNICA PALAVRA da "Mensagem Original" e substituí-la por um sinônimo adequado. A alteração é compulsória.
+        2. Mantenha EXATAMENTE o mesmo significado, tom e intenção da "Mensagem Original".
+        3. Se houver links (http...), MANTENHA-OS IDÊNTICOS.
+        4. Mantenha o restante da frase (incluindo pontuação, quebra de linha e estrutura) EXATAMENTE IDÊNTICO ao original.
+        5. Mantenha o texto de saída no **mesmo idioma** da "Mensagem Original".
+        6. NÃO use aspas, comentários ou explicações na resposta. Apenas o texto puro da mensagem reescrita.
 
         Mensagem Original: "${originalText}"
         `;
@@ -464,7 +470,6 @@ async function workerLoop() {
     const state = stateManager.state;
     const guildId = state.currentAnnounceGuildId;
     
-    // 🛡️ SEGURANÇA: Garante que dados existam
     if (!guildId || !state.guildData[guildId]) {
         console.error("⚠️ Worker iniciou sem guilda válida.");
         return;
@@ -512,7 +517,6 @@ async function workerLoop() {
                 catch (e) {
                     console.log(`⏭️ Inacessível: ${userId}`);
                     await stateManager.modify(s => {
-                          // 🛡️ SEGURANÇA
                           ensureGuildData(s, guildId);
                           if (!s.guildData[guildId].processedMembers.includes(userId)) s.guildData[guildId].processedMembers.push(userId);
                     });
@@ -528,7 +532,6 @@ async function workerLoop() {
             const result = await sendStealthDM(user, state.text, state.attachments);
 
             await stateManager.modify(s => {
-                // 🛡️ SEGURANÇA
                 const gData = ensureGuildData(s, guildId);
                 
                 if (result.success) {
@@ -714,7 +717,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
     
-    // 🛡️ SEGURANÇA: Inicializa dados se não existirem
     const gd = ensureGuildData(state, guildId);
 
     if (state.active) return unifiedReply(ctx, "❌ Já existe um envio ativo.");
@@ -735,7 +737,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
 
     if (totalRemaining > 0 && parsed.hasForce) {
         await stateManager.modify(s => {
-            // 🛡️ SEGURANÇA
             const g = ensureGuildData(s, guildId);
             g.pendingQueue = [];
             g.failedQueue = [];
@@ -770,7 +771,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.ignore = parsed.ignore;
         s.only = parsed.only;
         
-        // 🛡️ SEGURANÇA
         const gData = ensureGuildData(s, guildId);
         gData.lastRunText = text || "";
         gData.lastRunAttachments = attachments;
@@ -781,8 +781,9 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     
     let progressMsg;
     if (ctx.isChatInputCommand?.()) {
-        await unifiedReply(ctx, msgContent);
-        progressMsg = await ctx.fetchReply();
+        // 🚨 NOVO: Se for Slash Command, usa deferReply e editReply para evitar timeout
+        await ctx.deferReply({ ephemeral: true });
+        progressMsg = await unifiedReply(ctx, msgContent);
     } else {
         progressMsg = await unifiedReply(ctx, msgContent);
     }
@@ -816,7 +817,6 @@ async function execResume(ctx, attachmentUrl) {
     }
 
     const s = stateManager.state;
-    // 🛡️ SEGURANÇA
     const gd = ensureGuildData(s, ctx.guild.id);
     
     const allIds = [...new Set([
@@ -843,7 +843,6 @@ async function execResume(ctx, attachmentUrl) {
         st.attachments = attachToSend || [];
         st.currentRunStats = { success: 0, fail: 0, closed: 0 };
         
-        // 🛡️ SEGURANÇA
         const g = ensureGuildData(st, ctx.guild.id);
         g.pendingQueue = [];
         g.failedQueue = [];
@@ -853,8 +852,8 @@ async function execResume(ctx, attachmentUrl) {
     let progressMsg;
     
     if (ctx.isChatInputCommand?.()) {
-        await unifiedReply(ctx, msgContent);
-        progressMsg = await ctx.fetchReply();
+        await ctx.deferReply({ ephemeral: true });
+        progressMsg = await unifiedReply(ctx, msgContent);
     } else {
         progressMsg = await unifiedReply(ctx, msgContent);
     }
@@ -870,17 +869,28 @@ async function execUpdate(ctx) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
 
-    // 🛡️ SEGURANÇA: Garante que existe o objeto, para não quebrar ao ler .lastRunText
+    // 🛡️ Inicializa dados se não existirem (essencial para evitar crash ao ler .lastRunText)
     const gd = ensureGuildData(state, guildId);
 
     // 1. Verifica contexto básico
     if (!state.currentAnnounceGuildId && !gd.lastRunText) {
          return unifiedReply(ctx, "❌ Nenhuma campanha recente para atualizar.");
     }
+    
+    // 🚨 NOVO: Defer Reply para Slash Commands
+    if (ctx.isChatInputCommand?.()) {
+        await ctx.deferReply({ ephemeral: true });
+    }
 
     const targetGuildId = state.currentAnnounceGuildId || guildId;
     
-    unifiedReply(ctx, "🔄 Verificando novos membros...");
+    const initialReply = "🔄 Verificando novos membros...";
+    if (!ctx.isChatInputCommand?.()) {
+         unifiedReply(ctx, initialReply);
+    } else if (!ctx.replied && !ctx.deferred) {
+        // Isso só deve rodar se o defer acima falhar, mas é uma segurança.
+        await unifiedReply(ctx, initialReply); 
+    }
 
     await ctx.guild.members.fetch();
     const members = ctx.guild.members.cache;
@@ -890,7 +900,6 @@ async function execUpdate(ctx) {
 
     const newIds = [];
     
-    // 🛡️ SEGURANÇA: Usa o 'gd' que garantimos existir
     const knownIds = new Set([
         ...gd.processedMembers,
         ...gd.blockedDMs,
@@ -918,7 +927,6 @@ async function execUpdate(ctx) {
         if (s.active && s.currentAnnounceGuildId === targetGuildId) {
             s.queue.push(...newIds);
         } else {
-            // 🛡️ SEGURANÇA: Garante o objeto antes de push
             const g = ensureGuildData(s, targetGuildId);
             g.pendingQueue.push(...newIds);
         }
@@ -928,14 +936,23 @@ async function execUpdate(ctx) {
 }
 
 async function execStop(ctx) {
+    // 🚨 NOVO: Defer Reply para Slash Commands
+    if (ctx.isChatInputCommand?.()) {
+        await ctx.deferReply({ ephemeral: true });
+    }
+    
     await stateManager.modify(s => s.active = false);
     await sendBackupEmail("Stop Manual", stateManager.state);
     unifiedReply(ctx, "🛑 Parado (Backup enviado).");
 }
 
 async function execStatus(ctx) {
+    // 🚨 NOVO: Defer Reply para Slash Commands
+    if (ctx.isChatInputCommand?.()) {
+        await ctx.deferReply({ ephemeral: true });
+    }
+    
     const state = stateManager.state;
-    // 🛡️ SEGURANÇA
     const gd = ensureGuildData(state, ctx.guild.id);
     
     const isActive = state.active && state.currentAnnounceGuildId === ctx.guild.id;
@@ -982,9 +999,13 @@ async function registerSlashCommands() {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         console.log('Registrando Slash Commands...');
+        // 🚨 CRÍTICO: Use o ID do bot para registrar os comandos globalmente
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log('✅ Slash Commands Registrados!');
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+        console.error("❌ Erro ao registrar Slash Commands:", e); 
+        console.log("⚠️ Se estiver em DEV, pode demorar até 1 hora para sincronizar.");
+    }
 }
 
 // HANDLER: SLASH (/)
@@ -996,20 +1017,30 @@ client.on('interactionCreate', async interaction => {
 
     const { commandName } = interaction;
 
-    if (commandName === 'announce') {
-        const texto = interaction.options.getString('texto');
-        const anexo = interaction.options.getAttachment('anexo');
-        const filtros = interaction.options.getString('filtros');
-        await execAnnounce(interaction, texto, anexo ? anexo.url : null, filtros);
-    } else if (commandName === 'resume') {
-        const arquivo = interaction.options.getAttachment('arquivo');
-        await execResume(interaction, arquivo ? arquivo.url : null);
-    } else if (commandName === 'update') {
-        await execUpdate(interaction);
-    } else if (commandName === 'stop') {
-        await execStop(interaction);
-    } else if (commandName === 'status') {
-        await execStatus(interaction);
+    try {
+        if (commandName === 'announce') {
+            const texto = interaction.options.getString('texto');
+            const anexo = interaction.options.getAttachment('anexo');
+            const filtros = interaction.options.getString('filtros');
+            await execAnnounce(interaction, texto, anexo ? anexo.url : null, filtros);
+        } else if (commandName === 'resume') {
+            const arquivo = interaction.options.getAttachment('arquivo');
+            await execResume(interaction, arquivo ? arquivo.url : null);
+        } else if (commandName === 'update') {
+            // 🚨 NOVO: Execução do update
+            await execUpdate(interaction);
+        } else if (commandName === 'stop') {
+            await execStop(interaction);
+        } else if (commandName === 'status') {
+            await execStatus(interaction);
+        }
+    } catch (error) {
+        console.error(`💥 Erro ao executar comando /${commandName}:`, error);
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ content: `❌ Erro interno ao executar /${commandName}.`, ephemeral: true });
+        } else {
+             await interaction.editReply({ content: `❌ Erro interno ao executar /${commandName}.` });
+        }
     }
 });
 
