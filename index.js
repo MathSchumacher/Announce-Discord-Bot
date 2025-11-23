@@ -23,14 +23,12 @@ const genAI = process.env.GEMINI_API_KEY
     ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) 
     : null;
 
-// Utiliza o modelo Flash 2.5 para velocidade e economia, ou null se sem chave
 const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.5-flash" }) : null;
 
 // ============================================================================
 // 🌍 DETECÇÃO DE AMBIENTE (LOCAL vs NUVEM)
 // ============================================================================
 
-// Verifica variáveis típicas de nuvem (Heroku, Railway, Render, etc.)
 const IS_CLOUD = !!(process.env.DYNO || process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.PORT);
 const IS_LOCAL = !IS_CLOUD;
 
@@ -50,27 +48,26 @@ let currentBatchBase = 14;
 
 // NOVOS VALORES AGRESSIVOS MAS SEGUROS
 const DELAY_RANDOM_MS = 22000;        // +0 a +22s → média final 16–28s
-const BATCH_VARIANCE = 8;             // agora 6–22 mensagens por lote (mais natural)
+const BATCH_VARIANCE = 8;             // agora 6–22 mensagens por lote
 const MIN_BATCH_PAUSE_MS = 9  * 60 * 1000;  // 9 minutos
 const MAX_BATCH_PAUSE_MS = 18 * 60 * 1000;  // 18 minutos
 
-// Delay extra longo (imita pessoa que parou pra pensar/ler)
 const EXTRA_LONG_DELAY_CHANCE = 0.18;  // 18% das mensagens
-const EXTRA_LONG_DELAY_MS     = 35000; // +35s base (produção)
+const EXTRA_LONG_DELAY_MS     = 35000; // +35s base
 
 // === FILTROS DE QUALIDADE DE CONTA ===
-const MIN_ACCOUNT_AGE_DAYS = 30; // Ignora contas novas (frequentemente iscas)
-const IGNORE_NO_AVATAR = true;   // Ignora usuários sem foto (frequentemente bots/spam traps)
+const MIN_ACCOUNT_AGE_DAYS = 30; 
+const IGNORE_NO_AVATAR = true;   
 
 // === SISTEMA DE COOLDOWN DINÂMICO ===
 const GUILD_COOLDOWN_MIN_HOURS = 6;
 const GUILD_COOLDOWN_MIN_MS = GUILD_COOLDOWN_MIN_HOURS * 3600000;
-const COOLDOWN_PENALTY_MS_PER_USER = 2000; // +2s de cooldown por usuário atingido
+const COOLDOWN_PENALTY_MS_PER_USER = 2000; 
 
 // === PROTEÇÃO CONTRA SOFT-BAN ===
 const SAVE_THRESHOLD = 5; 
 const MEMBER_CACHE_TTL = 5 * 60 * 1000; 
-const SOFT_BAN_THRESHOLD = 0.4; // 40% de erro ativa emergência
+const SOFT_BAN_THRESHOLD = 0.4; 
 const SOFT_BAN_MIN_SAMPLES = 10; 
 
 // ============================================================================
@@ -85,16 +82,12 @@ const transporter = nodemailer.createTransport({
     }
 });
 
-/**
- * Envia backup de emergência por e-mail caso o bot pare ou detecte risco.
- */
 async function sendBackupEmail(reason, state) {
     console.log(`📧 Iniciando backup por e-mail. Motivo: ${reason}`);
     
     const guildId = state.currentAnnounceGuildId;
     let remainingUsers = [...state.queue];
     
-    // Coleta todos os usuários pendentes de todas as listas
     if (guildId && state.guildData[guildId]) {
         const gd = state.guildData[guildId];
         const allPending = [
@@ -102,7 +95,6 @@ async function sendBackupEmail(reason, state) {
             ...gd.pendingQueue,
             ...gd.failedQueue
         ];
-        // Filtra duplicados e bloqueados
         remainingUsers = [...new Set(allPending)].filter(id => !gd.blockedDMs.includes(id));
     }
 
@@ -175,11 +167,9 @@ class StateManager {
             const parsed = JSON.parse(raw);
             const loaded = Object.assign(stateToLoad, parsed);
 
-            // Recupera Sets
             loaded.ignore = new Set(Array.isArray(loaded.ignore) ? loaded.ignore : []);
             loaded.only = new Set(Array.isArray(loaded.only) ? loaded.only : []);
 
-            // Inicializa dados das Guildas (Garante Arrays)
             for (const guildId in loaded.guildData) {
                 const gd = loaded.guildData[guildId];
                 gd.processedMembers = Array.isArray(gd.processedMembers) ? gd.processedMembers : [];
@@ -279,9 +269,8 @@ function randomizeParameters() {
         return;
     }
 
-    // PRODUÇÃO 2025 — AGRESSIVO MAS INDETECTÁVEL
-    currentDelayBase = 16000 + Math.floor(Math.random() * 12000);  // 16–28s
-    currentBatchBase = 14   + Math.floor(Math.random() * 9);       // 14–22 msgs
+    currentDelayBase = 16000 + Math.floor(Math.random() * 12000);  
+    currentBatchBase = 14   + Math.floor(Math.random() * 9);       
 
     console.log(`STEALTH AGRESSIVO → Delay ${(currentDelayBase/1000).toFixed(1)}–${((currentDelayBase + DELAY_RANDOM_MS)/1000).toFixed(1)}s | Lote ${currentBatchBase} ±${BATCH_VARIANCE}`);
 }
@@ -411,14 +400,12 @@ async function sendStealthDM(user, rawText, attachments) {
         else dmChannel = await user.createDM();
     } catch (e) { return { success: false, reason: "closed" }; }
 
-    // 1. Gera Variação
     let finalContent = rawText;
     if (rawText) {
         const userDisplay = user.globalName || user.username || "amigo";
         finalContent = await getAiVariation(rawText, userDisplay);
     }
 
-    // 2. Comportamento Humano
     try {
         const shouldType = Math.random() > 0.25;
         if (shouldType && finalContent) {
@@ -430,14 +417,12 @@ async function sendStealthDM(user, rawText, attachments) {
         }
     } catch (e) { /* Ignora */ }
 
-    // 3. Monta Payload Único
     const payload = {};
     if (finalContent) payload.content = finalContent;
     if (attachments && attachments.length > 0) payload.files = attachments;
 
     if (!payload.content && !payload.files) return { success: false, reason: "empty" };
 
-    // 4. Envio com Retry
     for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
         try {
             await dmChannel.send(payload);
@@ -447,7 +432,6 @@ async function sendStealthDM(user, rawText, attachments) {
             const errMsg = (err.message || "").toLowerCase();
             const code = err.code || 0;
 
-            // ERROS CRÍTICOS (SPAM/BLOCK)
             if (code === 40003 || errMsg.includes("spam") || errMsg.includes("quarantine")) {
                  console.error("🚨 ALERTA CRÍTICO: SPAM FLAG (40003)");
                  await stateManager.modify(s => s.quarantine = true);
@@ -458,7 +442,6 @@ async function sendStealthDM(user, rawText, attachments) {
                 return { success: false, reason: "closed" };
             }
 
-            // RATE LIMIT (ESPERA)
             if (err.retry_after || code === 20016) {
                 const waitTime = (err.retry_after ? err.retry_after * 1000 : 60000) + 5000;
                 console.warn(`⏳ Rate Limit. Esperando ${waitTime/1000}s.`);
@@ -467,7 +450,6 @@ async function sendStealthDM(user, rawText, attachments) {
                 continue;
             }
             
-            // ERRO DE REDE (BACKOFF)
             const backoff = 5000 * attempt;
             console.error(`❌ Erro envio (${attempt}): ${errMsg}. Esperando ${backoff}ms.`);
             if (attempt < RETRY_LIMIT) await wait(backoff);
@@ -492,16 +474,13 @@ async function workerLoop() {
 
         while (state.active && state.queue.length > 0) {
             
-            // Lógica de Pausa de Lotes
             if (sentInBatch >= currentBatchSize) {
                 const pauseRange = MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS;
-                // Se for LOCAL, pausa rápida (3s), se NUVEM, pausa stealth
                 const pauseDuration = IS_LOCAL 
                     ? 3000 
                     : MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * (MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS));
 
                 console.log(`Lote concluído. Pausa de ${(pauseDuration/60000).toFixed(1)} minutos.`);
-                
                 console.log(`⏸️ Lote fim. Pausa ${(pauseDuration/1000).toFixed(0)}s.`);
                 
                 stateManager.forceSave();
@@ -510,7 +489,6 @@ async function workerLoop() {
                 await wait(pauseDuration);
                 randomizeParameters();
                 
-                // Verifica se foi parado durante a pausa
                 if (!stateManager.state.active || stateManager.state.queue.length === 0) break;
                 
                 sentInBatch = 0;
@@ -520,35 +498,30 @@ async function workerLoop() {
             const userId = state.queue.shift();
             await stateManager.modify(() => {}); 
 
-            // Filtro: Lista Negra Local
             if (gd.blockedDMs && gd.blockedDMs.includes(userId)) {
                 console.log(`⏭️ Bloqueado: ${userId}`);
                 continue;
             }
 
-            // Busca Usuário (Cache -> API)
             let user = client.users.cache.get(userId);
             if (!user) {
                 try { user = await client.users.fetch(userId); } 
                 catch (e) {
                     console.log(`⏭️ Inacessível: ${userId}`);
                     await stateManager.modify(s => {
-                         if (!s.guildData[guildId].processedMembers.includes(userId)) s.guildData[guildId].processedMembers.push(userId);
+                          if (!s.guildData[guildId].processedMembers.includes(userId)) s.guildData[guildId].processedMembers.push(userId);
                     });
                     continue;
                 }
             }
             
-            // Filtro: Bot ou Conta Suspeita
             if (user.bot || isSuspiciousAccount(user)) {
                 console.log(`🚫 Ignorado (Bot/Suspeito): ${user.tag}`);
                 continue;
             }
 
-            // ENVIO
             const result = await sendStealthDM(user, state.text, state.attachments);
 
-            // Atualização de Estatísticas
             await stateManager.modify(s => {
                 const gData = s.guildData[guildId];
                 if (result.success) {
@@ -569,7 +542,6 @@ async function workerLoop() {
                 if (!gData.processedMembers.includes(userId)) gData.processedMembers.push(userId);
             });
 
-            // Checagem de Emergência
             if (stateManager.state.quarantine) {
                 await sendBackupEmail("Quarentena Detectada (API Flag)", stateManager.state);
                 break;
@@ -587,11 +559,9 @@ async function workerLoop() {
 
             updateProgressEmbed().catch(() => {});
             
-            // Delay pós-envio
             if (result.success) {
                 let d = currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS);
 
-                // 18% das vezes simula "pessoa pensando / distraída" → ultra humano
                 if (Math.random() < EXTRA_LONG_DELAY_CHANCE) {
                     const extra = IS_LOCAL ? 5000 : EXTRA_LONG_DELAY_MS + Math.floor(Math.random() * 25000);
                     d += extra;
@@ -608,7 +578,6 @@ async function workerLoop() {
             sentInBatch++;
         }
 
-        // Finalização
         if (state.queue.length === 0 && state.active) {
             console.log("✅ Fim da Fila.");
             await finalizeSending();
@@ -721,18 +690,16 @@ function calculateCooldownInfo(guildData) {
 // 🎮 LÓGICA CENTRAL DOS COMANDOS (AGNOSTICA À ENTRADA)
 // ============================================================================
 
-// Função auxiliar para responder (Privado se Slash, Público se Msg)
 async function unifiedReply(ctx, content, embeds = []) {
     const payload = { content, embeds };
     if (ctx.isChatInputCommand?.()) { 
-        payload.ephemeral = true; // Resposta invisível no Slash (Sua solicitação)
+        payload.ephemeral = true; 
         if (ctx.deferred || ctx.replied) return ctx.editReply(payload);
         return ctx.reply(payload);
     }
     return ctx.reply(payload);
 }
 
-// Lógica do ANNOUNCE (Serve para !announce e /announce)
 async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
@@ -797,8 +764,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
 
     const msgContent = `🚀 Iniciando envio Stealth para **${queue.length}** membros...`;
     
-    // Para atualizar progresso, precisamos do ID da mensagem.
-    // No Slash Command, precisamos do fetchReply.
     let progressMsg;
     if (ctx.isChatInputCommand?.()) {
         await unifiedReply(ctx, msgContent);
@@ -815,7 +780,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     startWorker();
 }
 
-// Lógica do RESUME (Serve para !resume e /resume)
 async function execResume(ctx, attachmentUrl) {
     if (stateManager.state.active) return unifiedReply(ctx, "⚠️ Já ativo.");
 
@@ -839,7 +803,6 @@ async function execResume(ctx, attachmentUrl) {
     const s = stateManager.state;
     const gd = s.guildData[ctx.guild.id];
     
-    // CORREÇÃO: Soma todas as filas (JSON + Pendente + Falha)
     const allIds = [...new Set([
         ...s.queue, 
         ...gd.pendingQueue, 
@@ -884,14 +847,81 @@ async function execResume(ctx, attachmentUrl) {
     startWorker();
 }
 
-// Lógica do STOP
+// 🆕 COMANDO DE UPDATE (ADICIONA NOVOS MEMBROS À FILA)
+async function execUpdate(ctx) {
+    const guildId = ctx.guild.id;
+    const state = stateManager.state;
+    const gd = state.guildData[guildId];
+
+    // 1. Verifica contexto básico
+    // Se não há campanha ativa E não há texto salvo, não há o que atualizar
+    if (!state.currentAnnounceGuildId && !gd.lastRunText) {
+         return unifiedReply(ctx, "❌ Nenhuma campanha recente para atualizar.");
+    }
+
+    // Se estiver ativo, o alvo é a guilda ativa. Se estiver parado, é a guilda do comando.
+    const targetGuildId = state.currentAnnounceGuildId || guildId;
+    
+    unifiedReply(ctx, "🔄 Verificando novos membros...");
+
+    // 2. Força atualização dos membros da guilda (fetch)
+    await ctx.guild.members.fetch();
+    const members = ctx.guild.members.cache;
+
+    // 3. Recupera restrições (filtros) salvos no estado
+    // Converte para Set caso esteja como Array no JSON
+    const ignoreSet = state.ignore instanceof Set ? state.ignore : new Set(state.ignore || []);
+    const onlySet = state.only instanceof Set ? state.only : new Set(state.only || []);
+
+    // 4. Identifica novos alvos
+    const newIds = [];
+    
+    // Cria um conjunto com TODOS que já foram tocados de alguma forma
+    const knownIds = new Set([
+        ...gd.processedMembers,
+        ...gd.blockedDMs,
+        ...gd.failedQueue,
+        ...gd.pendingQueue,
+        ...state.queue
+    ]);
+
+    for (const [id, m] of members) {
+        if (m.user.bot) continue;
+        
+        // Se já conhecemos (já enviou, falhou ou está na fila), pula
+        if (knownIds.has(id)) continue;
+        
+        // Respeita os filtros definidos no comando original
+        if (onlySet.size > 0 && !onlySet.has(id)) continue;
+        if (ignoreSet.has(id)) continue;
+
+        newIds.push(id);
+    }
+
+    if (newIds.length === 0) {
+        return unifiedReply(ctx, "✅ Lista já está 100% atualizada. Ninguém novo encontrado.");
+    }
+
+    // 5. Atualiza o Estado
+    await stateManager.modify(s => {
+        // Se estiver ATIVO e rodando nessa guilda, adiciona na fila IMEDIATA
+        if (s.active && s.currentAnnounceGuildId === targetGuildId) {
+            s.queue.push(...newIds);
+        } else {
+            // Se estiver PARADO, adiciona na fila PENDENTE (para o próximo resume)
+            s.guildData[targetGuildId].pendingQueue.push(...newIds);
+        }
+    });
+
+    return unifiedReply(ctx, `🆕 **Atualizado!** Adicionados +${newIds.length} novos membros à fila.`);
+}
+
 async function execStop(ctx) {
     await stateManager.modify(s => s.active = false);
     await sendBackupEmail("Stop Manual", stateManager.state);
     unifiedReply(ctx, "🛑 Parado (Backup enviado).");
 }
 
-// Lógica do STATUS
 async function execStatus(ctx) {
     const state = stateManager.state;
     const gd = state.guildData[ctx.guild.id] || {};
@@ -913,7 +943,6 @@ async function execStatus(ctx) {
 // 📝 REGISTRO & HANDLERS DE COMANDOS
 // ============================================================================
 
-// Registra comandos "/" automaticamente ao iniciar
 async function registerSlashCommands() {
     const commands = [
         new SlashCommandBuilder()
@@ -926,6 +955,9 @@ async function registerSlashCommands() {
             .setName('resume')
             .setDescription('Retoma envio (Invisível)')
             .addAttachmentOption(opt => opt.setName('arquivo').setDescription('JSON Backup')),
+        new SlashCommandBuilder()
+            .setName('update')
+            .setDescription('Busca novos membros e adiciona à fila (Invisível)'),
         new SlashCommandBuilder()
             .setName('stop')
             .setDescription('Para o envio (Invisível)'),
@@ -959,6 +991,8 @@ client.on('interactionCreate', async interaction => {
     } else if (commandName === 'resume') {
         const arquivo = interaction.options.getAttachment('arquivo');
         await execResume(interaction, arquivo ? arquivo.url : null);
+    } else if (commandName === 'update') {
+        await execUpdate(interaction);
     } else if (commandName === 'stop') {
         await execStop(interaction);
     } else if (commandName === 'status') {
@@ -980,11 +1014,12 @@ client.on("messageCreate", async (message) => {
     if (cmd === 'announce') {
         const fullContent = content.slice(9).trim();
         const attachment = message.attachments.first();
-        // No prefixo, filtros e texto são a mesma string, o parseSelectors lida com isso internamente
         await execAnnounce(message, fullContent, attachment ? attachment.url : null, fullContent);
     } else if (cmd === 'resume') {
         const attachment = message.attachments.first();
         await execResume(message, attachment ? attachment.url : null);
+    } else if (cmd === 'update') {
+        await execUpdate(message);
     } else if (cmd === 'stop') {
         await execStop(message);
     } else if (cmd === 'status') {
@@ -999,7 +1034,6 @@ client.on("ready", async () => {
     if (stateManager.state.active) startWorker();
 });
 
-// Captura de erros fatais para não derrubar o processo
 process.on("unhandledRejection", (err) => console.error("❌ Unhandled Rejection:", err));
 process.on("uncaughtException", (err) => {
     console.error("❌ Uncaught Exception:", err);
