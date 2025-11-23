@@ -345,6 +345,23 @@ Código desenvolvido por **Matheus Schumacher**. Uso livre sob licença MIT.
 
 ---
 
+## **💝 Apoie o Projeto**
+
+<p align="center">
+  <strong>Gostou do bot? Ajude a mantê-lo atualizado e open source!</strong><br>
+  Se puder, doe <strong>R$ 10,00</strong> via PIX 🙏
+</p>
+
+<p align="center">
+  <img src="./img/qrcode.webp" width="300" alt="QR Code PIX para doação">
+</p>
+
+<p align="center">
+  <em>Sua contribuição ajuda no desenvolvimento de novas features e manutenção contínua! ❤️</em>
+</p>
+
+---
+
 <p align="center">
  <strong>⚡ Powered by Discord.js, Gemini AI & Human Behavior Science ⚡</strong>
 </p>
