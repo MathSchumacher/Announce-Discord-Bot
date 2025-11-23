@@ -1,4 +1,4 @@
-﻿﻿# **🚀 Announce Discord Bot v2.0: Envio de DMs em massa**
+﻿﻿<h1 align="center">🚀 Announce Discord Bot v2.0: Envio de DMs em massa com IA 🤖</h1>
 <p align="center">
 <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js">
 <img src="https://img.shields.io/badge/Discord.js-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord.js">
