@@ -1,34 +1,43 @@
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const https = require("https"); // Necessário para baixar o anexo JSON
-const nodemailer = require("nodemailer"); // Necessário para enviar o backup por e-mail
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField } = require("discord.js");
+const https = require("https");
+const nodemailer = require("nodemailer");
+const { 
+    Client, 
+    GatewayIntentBits, 
+    Partials, 
+    EmbedBuilder, 
+    PermissionsBitField,
+    REST,
+    Routes,
+    SlashCommandBuilder
+} = require("discord.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // ============================================================================
-// CONFIGURAÇÃO DA IA (GEMINI)
+// 🧠 CONFIGURAÇÃO DA INTELIGÊNCIA ARTIFICIAL (GEMINI)
 // ============================================================================
 
 const genAI = process.env.GEMINI_API_KEY 
     ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) 
     : null;
 
-// Usa o modelo Flash 2.5 (Mais rápido e atual) ou fallback para Pro se der erro
+// Utiliza o modelo Flash 2.5 para velocidade e economia, ou null se sem chave
 const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.5-flash" }) : null;
 
 // ============================================================================
-// VARIÁVEL DE AMBIENTE (IS_LOCAL)
+// 🌍 DETECÇÃO DE AMBIENTE (LOCAL vs NUVEM)
 // ============================================================================
 
-// Detecta se está rodando em nuvem (Heroku, Railway, etc) ou Local
+// Verifica variáveis típicas de nuvem (Heroku, Railway, Render, etc.)
 const IS_CLOUD = !!(process.env.DYNO || process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.PORT);
 const IS_LOCAL = !IS_CLOUD;
 
-console.log(`🌍 Ambiente Detectado: ${IS_LOCAL ? 'LOCAL (PC)' : 'NUVEM'}`);
+console.log(`🌍 Ambiente Detectado: ${IS_LOCAL ? 'LOCAL (PC - Testes Rápidos)' : 'NUVEM (Produção - Stealth Ativo)'}`);
 
 // ============================================================================
-// CONFIGURAÇÕES GERAIS E CONSTANTES (MODO STEALTH ATIVADO)
+// ⚙️ CONFIGURAÇÕES GERAIS E CONSTANTES DE SEGURANÇA
 // ============================================================================
 
 const RETRY_LIMIT = 3;
@@ -36,75 +45,74 @@ const STATE_FILE = path.resolve(__dirname, "state.json");
 const PROGRESS_UPDATE_INTERVAL = 5000;
 const TARGET_EMAIL = process.env.TARGET_EMAIL || "matheusmschumacher@gmail.com";
 
-// === SEGURANÇA: VALORES AUMENTADOS PARA EVITAR DETECÇÃO ===
-let currentDelayBase = 25000; // Aumentado para 25s base
-const DELAY_RANDOM_MS = 15000; // Variação de até +15s
-let currentBatchBase = 12; // Lotes menores (12 msgs) são mais seguros
-const BATCH_VARIANCE = 4; // Variação do lote (8 a 16)
-const MIN_BATCH_PAUSE_MS = 12 * 60 * 1000; // Pausa mínima de 12 minutos
-const MAX_BATCH_PAUSE_MS = 25 * 60 * 1000; // Pausa máxima de 25 minutos
+let currentDelayBase = 22000;
+let currentBatchBase = 14;
 
-// === FILTROS DE SEGURANÇA DE CONTA (NOVO) ===
-const MIN_ACCOUNT_AGE_DAYS = 30; // Ignora contas com menos de 30 dias (anti-armadilha)
-const IGNORE_NO_AVATAR = true;   // Ignora usuários sem foto de perfil (geralmente bots/spam traps)
+// NOVOS VALORES AGRESSIVOS MAS SEGUROS
+const DELAY_RANDOM_MS = 22000;        // +0 a +22s → média final 16–28s
+const BATCH_VARIANCE = 8;             // agora 6–22 mensagens por lote (mais natural)
+const MIN_BATCH_PAUSE_MS = 9  * 60 * 1000;  // 9 minutos
+const MAX_BATCH_PAUSE_MS = 18 * 60 * 1000;  // 18 minutos
 
-// === COOLDOWN DINÂMICO POR SERVIDOR ===
+// Delay extra longo (imita pessoa que parou pra pensar/ler)
+const EXTRA_LONG_DELAY_CHANCE = 0.18;  // 18% das mensagens
+const EXTRA_LONG_DELAY_MS     = 35000; // +35s base (produção)
+
+// === FILTROS DE QUALIDADE DE CONTA ===
+const MIN_ACCOUNT_AGE_DAYS = 30; // Ignora contas novas (frequentemente iscas)
+const IGNORE_NO_AVATAR = true;   // Ignora usuários sem foto (frequentemente bots/spam traps)
+
+// === SISTEMA DE COOLDOWN DINÂMICO ===
 const GUILD_COOLDOWN_MIN_HOURS = 6;
 const GUILD_COOLDOWN_MIN_MS = GUILD_COOLDOWN_MIN_HOURS * 3600000;
-const COOLDOWN_PENALTY_MS_PER_USER = 2000; // Adiciona 2s de cooldown para cada usuário enviado
+const COOLDOWN_PENALTY_MS_PER_USER = 2000; // +2s de cooldown por usuário atingido
 
-// === OTIMIZAÇÃO E PROTEÇÃO CONTRA SOFT-BAN ===
-const SAVE_THRESHOLD = 5; // Salva o arquivo JSON a cada 5 alterações de estado
-const MEMBER_CACHE_TTL = 5 * 60 * 1000; // Cache de lista de membros por 5 minutos
-const SOFT_BAN_THRESHOLD = 0.4; // Se 40% das tentativas falharem, ativa o modo de emergência
-const SOFT_BAN_MIN_SAMPLES = 10; // Mínimo de 10 tentativas para calcular a taxa de falha
+// === PROTEÇÃO CONTRA SOFT-BAN ===
+const SAVE_THRESHOLD = 5; 
+const MEMBER_CACHE_TTL = 5 * 60 * 1000; 
+const SOFT_BAN_THRESHOLD = 0.4; // 40% de erro ativa emergência
+const SOFT_BAN_MIN_SAMPLES = 10; 
 
 // ============================================================================
-// SERVIÇO DE E-MAIL (BACKUP DE EMERGÊNCIA)
+// 📧 SERVIÇO DE E-MAIL DE EMERGÊNCIA
 // ============================================================================
 
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-        user: process.env.EMAIL_USER, // Seu e-mail (configurado no .env)
-        pass: process.env.EMAIL_PASS  // Sua senha de app (configurada no .env)
+        user: process.env.EMAIL_USER, 
+        pass: process.env.EMAIL_PASS 
     }
 });
 
 /**
- * Envia um e-mail com o estado atual do bot em anexo (JSON).
- * Acionado em caso de Quarentena, Erro Crítico ou Shutdown.
+ * Envia backup de emergência por e-mail caso o bot pare ou detecte risco.
  */
 async function sendBackupEmail(reason, state) {
-    console.log(`📧 Iniciando processo de backup por e-mail. Motivo: ${reason}`);
+    console.log(`📧 Iniciando backup por e-mail. Motivo: ${reason}`);
     
     const guildId = state.currentAnnounceGuildId;
     let remainingUsers = [...state.queue];
     
-    // Se houver um envio ativo, tenta coletar todos os usuários pendentes de todas as filas
+    // Coleta todos os usuários pendentes de todas as listas
     if (guildId && state.guildData[guildId]) {
         const gd = state.guildData[guildId];
-        
-        // Combina a fila atual, a fila de pendentes e a fila de falhas
         const allPending = [
             ...state.queue,
             ...gd.pendingQueue,
             ...gd.failedQueue
         ];
-        
-        // Remove duplicatas e remove usuários que estão na lista de bloqueio
+        // Filtra duplicados e bloqueados
         remainingUsers = [...new Set(allPending)].filter(id => !gd.blockedDMs.includes(id));
     }
 
-    // Se não sobrar ninguém para enviar, não faz sentido mandar o e-mail
     if (remainingUsers.length === 0) {
-        console.log("📧 Backup de e-mail ignorado: Nenhum usuário válido restante na fila.");
+        console.log("ℹ️ Backup ignorado: Fila vazia.");
         return;
     }
 
-    // Cria o objeto de backup
     const backupData = {
-        source: "Bot_Stealth_System_Full",
+        source: "Bot_Stealth_System_V2_Hybrid",
         timestamp: Date.now(),
         reason: reason,
         text: state.text || (guildId ? state.guildData[guildId]?.lastRunText : ""),
@@ -118,32 +126,21 @@ async function sendBackupEmail(reason, state) {
     const mailOptions = {
         from: process.env.EMAIL_USER,
         to: TARGET_EMAIL,
-        subject: `🚨 Bot Security Alert: ${reason}`,
-        text: `O sistema de envio foi interrompido para proteção.\n\n` +
-              `📌 Motivo: ${reason}\n` +
-              `👥 Usuários Restantes: ${remainingUsers.length}\n\n` +
-              `COMO RETOMAR:\n` +
-              `1. Baixe o arquivo JSON anexado.\n` +
-              `2. Vá ao servidor Discord correto.\n` +
-              `3. Use o comando !resume e anexe este arquivo na mensagem.`,
-        attachments: [
-            {
-                filename: `resume_stealth_${Date.now()}.json`,
-                content: jsonContent
-            }
-        ]
+        subject: `🚨 Bot Alert: ${reason}`,
+        text: `O sistema parou para proteção.\nMotivo: ${reason}\nRestantes: ${remainingUsers.length}\n\nUse !resume com o anexo para continuar.`,
+        attachments: [{ filename: `resume_${Date.now()}.json`, content: jsonContent }]
     };
 
     try {
         await transporter.sendMail(mailOptions);
-        console.log("✅ E-mail de backup enviado com sucesso!");
+        console.log("✅ E-mail de backup enviado.");
     } catch (error) {
-        console.error("❌ FALHA CRÍTICA ao enviar e-mail de backup:", error);
+        console.error("❌ Falha no envio de e-mail:", error);
     }
 }
 
 // ============================================================================
-// GERENCIADOR DE ESTADO (STATE MANAGER)
+// 💾 GERENCIADOR DE ESTADO (PERSISTÊNCIA)
 // ============================================================================
 
 class StateManager {
@@ -167,41 +164,35 @@ class StateManager {
             progressMessageRef: null,
             quarantine: false,
             currentAnnounceGuildId: null,
-            guildData: {} // Armazena dados específicos de cada servidor
+            guildData: {} 
         };
     }
 
     load(initialState = null) {
         const stateToLoad = initialState || this.getInitialState();
-        
         try {
             const raw = initialState ? JSON.stringify(initialState) : fs.readFileSync(this.filePath, "utf8");
             const parsed = JSON.parse(raw);
             const loaded = Object.assign(stateToLoad, parsed);
 
-            // Reconverte Arrays para Sets (filtros de comando)
+            // Recupera Sets
             loaded.ignore = new Set(Array.isArray(loaded.ignore) ? loaded.ignore : []);
             loaded.only = new Set(Array.isArray(loaded.only) ? loaded.only : []);
 
-            // CORREÇÃO IMPORTANTE: Carrega blockedDMs e processedMembers como ARRAYS para evitar erro .includes()
+            // Inicializa dados das Guildas (Garante Arrays)
             for (const guildId in loaded.guildData) {
                 const gd = loaded.guildData[guildId];
                 gd.processedMembers = Array.isArray(gd.processedMembers) ? gd.processedMembers : [];
-                gd.blockedDMs = Array.isArray(gd.blockedDMs) ? gd.blockedDMs : []; // Carrega como Array
+                gd.blockedDMs = Array.isArray(gd.blockedDMs) ? gd.blockedDMs : []; 
                 gd.failedQueue = Array.isArray(gd.failedQueue) ? gd.failedQueue : [];
                 gd.pendingQueue = Array.isArray(gd.pendingQueue) ? gd.pendingQueue : [];
                 gd.lastRunText = gd.lastRunText || "";
                 gd.lastRunAttachments = Array.isArray(gd.lastRunAttachments) ? gd.lastRunAttachments : [];
             }
-
-            console.log(`✅ Estado ${initialState ? "importado do anexo" : "carregado do disco"} com sucesso.`);
             return loaded;
         } catch (e) {
-            if (initialState) {
-                console.error("❌ Erro ao processar o JSON anexado:", e);
-                return null;
-            }
-            console.log("ℹ️ Nenhum estado anterior encontrado ou arquivo corrompido. Iniciando limpo.");
+            if (initialState) return null;
+            console.log("ℹ️ Iniciando com estado limpo.");
             return this.getInitialState();
         }
     }
@@ -214,60 +205,38 @@ class StateManager {
                 only: [...this.state.only],
                 guildData: {}
             };
-
             for (const [id, data] of Object.entries(this.state.guildData)) {
                 serializable.guildData[id] = {
                     ...data,
-                    // Já são arrays, spread para garantir cópia limpa
                     processedMembers: [...data.processedMembers],
                     blockedDMs: [...data.blockedDMs] 
                 };
             }
-
             fs.writeFileSync(this.filePath, JSON.stringify(serializable, null, 2));
             this.unsavedChanges = 0;
-        } catch (e) {
-            console.error("❌ Erro ao salvar estado no disco:", e);
-        }
+        } catch (e) { console.error("Erro ao salvar:", e); }
     }
 
     async modify(callback) {
         return this.saveQueue = this.saveQueue.then(async () => {
             callback(this.state);
             this.unsavedChanges++;
-            if (this.unsavedChanges >= SAVE_THRESHOLD) {
-                this.save();
-            }
+            if (this.unsavedChanges >= SAVE_THRESHOLD) this.save();
         });
     }
 
     forceSave() {
-        if (this.unsavedChanges > 0) {
-            this.save();
-        }
+        if (this.unsavedChanges > 0) this.save();
     }
 
     setupShutdownHandler() {
         const saveOnExit = async (signal) => {
-            console.log(`\n🛑 Recebido sinal de encerramento (${signal})...`);
-            
-            // 1. Salva estado local
+            console.log(`\n🛑 Encerrando (${signal})...`);
             this.forceSave();
-            
-            // 2. Verifica se precisa enviar backup por e-mail
             const hasActiveQueue = this.state.active && this.state.queue.length > 0;
-            const hasPendingQueue = this.state.currentAnnounceGuildId && 
-                                    this.state.guildData[this.state.currentAnnounceGuildId]?.pendingQueue.length > 0;
-
-            if (hasActiveQueue || hasPendingQueue) {
-                console.log("⚠️ Detectado desligamento com itens na fila. Enviando backup...");
-                await sendBackupEmail(`Shutdown do Servidor (${signal})`, this.state);
-            }
-            
-            console.log("👋 Encerrando processo.");
+            if (hasActiveQueue) await sendBackupEmail(`Shutdown (${signal})`, this.state);
             process.exit(0);
         };
-
         process.on('SIGINT', () => saveOnExit('SIGINT'));
         process.on('SIGTERM', () => saveOnExit('SIGTERM'));
     }
@@ -276,7 +245,7 @@ class StateManager {
 const stateManager = new StateManager(STATE_FILE);
 
 // ============================================================================
-// CLIENTE DISCORD
+// 🤖 CLIENTE DISCORD & CACHE
 // ============================================================================
 
 const client = new Client({
@@ -297,23 +266,24 @@ let lastEmbedState = null;
 const memberCache = new Map();
 
 // ============================================================================
-// UTILITÁRIOS
+// 🛠️ UTILITÁRIOS & FERRAMENTAS
 // ============================================================================
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 function randomizeParameters() {
-    // Humanizer: Muda o delay base para não parecer robô
-    // Se estiver rodando LOCAL, usa delays rápidos. Se NUVEM, delays longos.
-    const minDelay = IS_LOCAL ? 2000 : 22000;
-    const maxDelay = IS_LOCAL ? 5000 : 35000;
-    
-    currentDelayBase = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-    
-    // Lotes variam
-    currentBatchBase = Math.floor(Math.random() * (15 - 8 + 1)) + 8; 
-    
-    console.log(`🎲 Humanizer: Novo Ritmo -> Delay ~${(currentDelayBase/1000).toFixed(1)}s | Lote ~${currentBatchBase} msgs`);
+    if (IS_LOCAL) {
+        currentDelayBase = 2000 + Math.random() * 3000;
+        currentBatchBase = 10 + Math.floor(Math.random() * 8);
+        console.log(`LOCAL → Delay ~${(currentDelayBase/1000).toFixed(1)}s | Lote ~${currentBatchBase}`);
+        return;
+    }
+
+    // PRODUÇÃO 2025 — AGRESSIVO MAS INDETECTÁVEL
+    currentDelayBase = 16000 + Math.floor(Math.random() * 12000);  // 16–28s
+    currentBatchBase = 14   + Math.floor(Math.random() * 9);       // 14–22 msgs
+
+    console.log(`STEALTH AGRESSIVO → Delay ${(currentDelayBase/1000).toFixed(1)}–${((currentDelayBase + DELAY_RANDOM_MS)/1000).toFixed(1)}s | Lote ${currentBatchBase} ±${BATCH_VARIANCE}`);
 }
 
 function getNextBatchSize() {
@@ -324,8 +294,7 @@ function getNextBatchSize() {
 
 function calculateTypingTime(text) {
     if (!text) return 1500;
-    const charactersPerSecond = 15;
-    const ms = (text.length / charactersPerSecond) * 1000;
+    const ms = (text.length / 15) * 1000;
     return Math.min(9000, Math.max(2500, ms));
 }
 
@@ -347,38 +316,24 @@ function parseSelectors(text) {
     }
     const cleaned = text.replace(regex, "").trim();
     const hasForce = /\bforce\b/i.test(cleaned);
-    const finalText = hasForce ? cleaned.replace(/\bforce\b/i, '').trim() : cleaned;
-    return { cleaned: finalText, ignore, only, hasForce };
-}
-
-function getVariedText(text) {
-    if (!text || text.includes("http")) return text || "";
-    const invisibleChars = ["\u200B", "\u200C", "\u200D", "\u2060"];
-    const randomChar = invisibleChars[Math.floor(Math.random() * invisibleChars.length)];
-    return `${text}${randomChar}`;
+    return { cleaned: hasForce ? cleaned.replace(/\bforce\b/i, '').trim() : cleaned, ignore, only, hasForce };
 }
 
 function validateAttachments(attachments) {
     const MAX_SIZE = 8 * 1024 * 1024; 
     const ALLOWED = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.pdf', '.webm'];
     for (const att of attachments) {
-        if (att.size > MAX_SIZE) return { valid: false, error: `❌ Arquivo "${att.name}" excede 8MB` };
+        if (att.size > MAX_SIZE) return { valid: false, error: `❌ Arquivo > 8MB` };
         const ext = path.extname(att.name).toLowerCase();
-        if (!ALLOWED.includes(ext)) return { valid: false, error: `❌ Tipo não permitido: ${ext}` };
+        if (!ALLOWED.includes(ext)) return { valid: false, error: `❌ Tipo inválido: ${ext}` };
     }
     return { valid: true };
 }
 
 async function getCachedMembers(guild) {
     const cached = memberCache.get(guild.id);
-    if (cached && Date.now() - cached.timestamp < MEMBER_CACHE_TTL) {
-        return cached.members;
-    }
-    try {
-        await guild.members.fetch();
-    } catch (e) {
-        console.warn("⚠️ Aviso: Falha ao buscar lista completa de membros:", e.message);
-    }
+    if (cached && Date.now() - cached.timestamp < MEMBER_CACHE_TTL) return cached.members;
+    try { await guild.members.fetch(); } catch (e) {}
     const members = guild.members.cache;
     memberCache.set(guild.id, { members, timestamp: Date.now() });
     return members;
@@ -390,13 +345,12 @@ function detectSoftBan(stats) {
     return ((stats.closed + stats.fail) / total) >= SOFT_BAN_THRESHOLD;
 }
 
-async function readAttachmentJSON(message) {
-    const attachment = message.attachments.first();
-    if (!attachment || !attachment.name.endsWith('.json') || attachment.size > 1024 * 1024) {
-        return { success: false, error: "❌ Nenhum arquivo JSON válido anexado (máx 1MB, deve ser '.json')" };
+async function readAttachmentJSON(url) {
+    if (!url || (!url.endsWith('.json') && !url.endsWith('.txt'))) {
+        return { success: false, error: "❌ URL inválida ou não é JSON" };
     }
     return new Promise(resolve => {
-        https.get(attachment.url, (res) => {
+        https.get(url, (res) => {
             let data = '';
             res.on('data', (chunk) => data += chunk);
             res.on('end', () => {
@@ -404,19 +358,19 @@ async function readAttachmentJSON(message) {
                     const parsed = JSON.parse(data);
                     resolve({ success: true, state: parsed });
                 } catch (e) {
-                    resolve({ success: false, error: "❌ Erro ao ler JSON. Arquivo corrompido." });
+                    resolve({ success: false, error: "❌ JSON Corrompido." });
                 }
             });
-        }).on('error', (err) => {
-            resolve({ success: false, error: `❌ Erro ao baixar: ${err.message}` });
-        });
+        }).on('error', (err) => resolve({ success: false, error: err.message }));
     });
 }
 
+// ============================================================================
+// 🧠 PROCESSAMENTO DE IA (VARIAÇÃO E STEALTH)
+// ============================================================================
+
 async function getAiVariation(originalText, globalname) {
-    // 1. Condição de Falha Imediata (se o modelo não carregar ou o texto for muito curto)
     if (!model || !originalText || originalText.length < 3) return originalText;
-    
     try {
         const prompt = `
         Aja como um assistente de comunicação minimalista e eficiente. Reescreva a mensagem abaixo para a pessoa chamada "${globalname}".
@@ -425,7 +379,7 @@ async function getAiVariation(originalText, globalname) {
         1. Mantenha EXATAMENTE o mesmo significado e intenção da "Mensagem Original".
         2. Se houver links (http...), MANTENHA-OS IDÊNTICOS.
         3. Mantenha o texto de saída no **mesmo idioma** da "Mensagem Original".
-        4. **CRÍTICO:** Sua única função é fazer uma alteração pontual: **Troque APENAS UMA ÚNICA PALAVRA ou a saudação inicial por um sinônimo**. Mantenha o restante da frase (incluindo pontuação e estrutura) idêntico ao original. Se não for possível, é permitido inverter ordem das palavras se o sentido permanecer o mesmo.
+        4. **CRÍTICO:** Sua única função é fazer uma alteração pontual: **Troque APENAS UMA ÚNICA PALAVRA ou a saudação inicial por um sinônimo**. Mantenha o restante da frase (incluindo pontuação e estrutura) idêntico ao original.
         5. NÃO use aspas na resposta. Apenas o texto puro.
 
         Mensagem Original: "${originalText}"
@@ -435,23 +389,19 @@ async function getAiVariation(originalText, globalname) {
         const response = await result.response;
         let text = response.text();
         
-        // CORREÇÃO DE ROBUSTEZ: Verifica se a IA retornou texto vazio (apesar do prompt)
         if (!text || text.trim().length === 0) {
-            console.warn("⚠️ IA retornou texto vazio ou inválido. Usando original.");
+            console.warn("⚠️ IA retornou vazio. Usando original.");
             return originalText;
         }
-        
         return text.replace(/^"|"$/g, '').trim();
-        
     } catch (error) {
-        // CORREÇÃO DE FALLBACK: Em caso de erro na API (timeout, 404, etc.), retorna originalText
-        console.warn(`⚠️ Erro na IA (Usando texto original): ${error.message}`);
+        console.warn(`⚠️ Erro IA (Fallback Original): ${error.message}`);
         return originalText;
     }
 }
 
 // ============================================================================
-// FUNÇÃO DE ENVIO UNIFICADO E INTELIGENTE
+// 📨 FUNÇÃO DE ENVIO (SINGLE PAYLOAD - MAIS SEGURO)
 // ============================================================================
 
 async function sendStealthDM(user, rawText, attachments) {
@@ -459,19 +409,16 @@ async function sendStealthDM(user, rawText, attachments) {
     try {
         if (user.dmChannel) dmChannel = user.dmChannel;
         else dmChannel = await user.createDM();
-    } catch (e) {
-        return { success: false, reason: "closed" };
+    } catch (e) { return { success: false, reason: "closed" }; }
+
+    // 1. Gera Variação
+    let finalContent = rawText;
+    if (rawText) {
+        const userDisplay = user.globalName || user.username || "amigo";
+        finalContent = await getAiVariation(rawText, userDisplay);
     }
 
-    // GERAÇÃO POR IA
-    let finalContent = rawText;
-if (rawText) {
-    // CORREÇÃO: Usar user.globalName, com fallback para user.username se globalName for null.
-    const userDisplay = user.globalName || user.username || "amigo";
-    finalContent = await getAiVariation(rawText, userDisplay);
-}
-
-    // Simula Comportamento Humano
+    // 2. Comportamento Humano
     try {
         const shouldType = Math.random() > 0.25;
         if (shouldType && finalContent) {
@@ -483,37 +430,44 @@ if (rawText) {
         }
     } catch (e) { /* Ignora */ }
 
+    // 3. Monta Payload Único
     const payload = {};
     if (finalContent) payload.content = finalContent;
     if (attachments && attachments.length > 0) payload.files = attachments;
 
+    if (!payload.content && !payload.files) return { success: false, reason: "empty" };
+
+    // 4. Envio com Retry
     for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
         try {
             await dmChannel.send(payload);
-            console.log(`✅ Enviado para ${user.tag}: "${finalContent ? finalContent.substring(0, 30) : 'Imagem'}..."`);
+            console.log(`✅ Enviado ${user.tag}: "${finalContent ? finalContent.substring(0, 20) : 'IMG'}..."`);
             return { success: true };
         } catch (err) {
             const errMsg = (err.message || "").toLowerCase();
             const code = err.code || 0;
 
-            // Erros Críticos (Parada Imediata)
+            // ERROS CRÍTICOS (SPAM/BLOCK)
             if (code === 40003 || errMsg.includes("spam") || errMsg.includes("quarantine")) {
-                 console.error("🚨 DETECÇÃO DE SPAM PELO DISCORD (40003/Quarantine)");
+                 console.error("🚨 ALERTA CRÍTICO: SPAM FLAG (40003)");
                  await stateManager.modify(s => s.quarantine = true);
                  return { success: false, reason: "quarantine" };
             }
             
-            if (code === 50007 || code === 50001) return { success: false, reason: "closed" };
+            if (code === 50007 || code === 50001) {
+                return { success: false, reason: "closed" };
+            }
 
-            // Rate Limit
+            // RATE LIMIT (ESPERA)
             if (err.retry_after || code === 20016) {
                 const waitTime = (err.retry_after ? err.retry_after * 1000 : 60000) + 5000;
-                console.warn(`⏳ Rate Limit detectado. Esperando ${waitTime/1000}s.`);
+                console.warn(`⏳ Rate Limit. Esperando ${waitTime/1000}s.`);
                 currentDelayBase += 5000;
                 await wait(waitTime);
                 continue;
             }
             
+            // ERRO DE REDE (BACKOFF)
             const backoff = 5000 * attempt;
             console.error(`❌ Erro envio (${attempt}): ${errMsg}. Esperando ${backoff}ms.`);
             if (attempt < RETRY_LIMIT) await wait(backoff);
@@ -523,11 +477,11 @@ if (rawText) {
 }
 
 // ============================================================================
-// WORKER LOOP
+// 🏭 WORKER LOOP (O MOTOR DO BOT)
 // ============================================================================
 
 async function workerLoop() {
-    console.log("🚀 Worker Stealth Iniciado");
+    console.log("🚀 Worker Iniciado");
     const state = stateManager.state;
     const guildId = state.currentAnnounceGuildId;
     const gd = state.guildData[guildId] || {};
@@ -538,13 +492,17 @@ async function workerLoop() {
 
         while (state.active && state.queue.length > 0) {
             
-            // Gestão de Pausa de Lotes
+            // Lógica de Pausa de Lotes
             if (sentInBatch >= currentBatchSize) {
                 const pauseRange = MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS;
-                // Se for LOCAL, a pausa é minúscula (3s), se nuvem, segue regra stealth
-                const pauseDuration = IS_LOCAL ? 3000 : (MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * pauseRange));
+                // Se for LOCAL, pausa rápida (3s), se NUVEM, pausa stealth
+                const pauseDuration = IS_LOCAL 
+                    ? 3000 
+                    : MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * (MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS));
+
+                console.log(`Lote concluído. Pausa de ${(pauseDuration/60000).toFixed(1)} minutos.`);
                 
-                console.log(`⏸️ Lote concluído. Pausa de ${(pauseDuration/1000).toFixed(0)}s.`);
+                console.log(`⏸️ Lote fim. Pausa ${(pauseDuration/1000).toFixed(0)}s.`);
                 
                 stateManager.forceSave();
                 await updateProgressEmbed();
@@ -552,7 +510,9 @@ async function workerLoop() {
                 await wait(pauseDuration);
                 randomizeParameters();
                 
+                // Verifica se foi parado durante a pausa
                 if (!stateManager.state.active || stateManager.state.queue.length === 0) break;
+                
                 sentInBatch = 0;
                 currentBatchSize = getNextBatchSize();
             }
@@ -560,44 +520,37 @@ async function workerLoop() {
             const userId = state.queue.shift();
             await stateManager.modify(() => {}); 
 
-            // Filtro Rápido: Lista Negra Local (Array)
+            // Filtro: Lista Negra Local
             if (gd.blockedDMs && gd.blockedDMs.includes(userId)) {
-                console.log(`⏭️ Ignorando ID na lista de bloqueio: ${userId}`);
+                console.log(`⏭️ Bloqueado: ${userId}`);
                 continue;
             }
 
+            // Busca Usuário (Cache -> API)
             let user = client.users.cache.get(userId);
             if (!user) {
-                try {
-                    user = await client.users.fetch(userId); 
-                } catch (e) {
-                    console.log(`⏭️ Usuário inacessível: ${userId}`);
+                try { user = await client.users.fetch(userId); } 
+                catch (e) {
+                    console.log(`⏭️ Inacessível: ${userId}`);
                     await stateManager.modify(s => {
-                         if (!s.guildData[guildId].processedMembers.includes(userId)) {
-                             s.guildData[guildId].processedMembers.push(userId);
-                         }
+                         if (!s.guildData[guildId].processedMembers.includes(userId)) s.guildData[guildId].processedMembers.push(userId);
                     });
                     continue;
                 }
             }
             
-            if (user.bot) continue;
-
-            if (isSuspiciousAccount(user)) {
-                console.log(`🚫 Pulando conta suspeita: ${user.tag}`);
-                await stateManager.modify(s => {
-                    if (!s.guildData[guildId].processedMembers.includes(userId)) {
-                        s.guildData[guildId].processedMembers.push(userId);
-                    }
-                });
+            // Filtro: Bot ou Conta Suspeita
+            if (user.bot || isSuspiciousAccount(user)) {
+                console.log(`🚫 Ignorado (Bot/Suspeito): ${user.tag}`);
                 continue;
             }
 
+            // ENVIO
             const result = await sendStealthDM(user, state.text, state.attachments);
 
+            // Atualização de Estatísticas
             await stateManager.modify(s => {
                 const gData = s.guildData[guildId];
-                
                 if (result.success) {
                     s.currentRunStats.success++;
                     const idx = gData.failedQueue.indexOf(userId);
@@ -613,10 +566,10 @@ async function workerLoop() {
                         if (!gData.failedQueue.includes(userId)) gData.failedQueue.push(userId);
                     }
                 }
-                
                 if (!gData.processedMembers.includes(userId)) gData.processedMembers.push(userId);
             });
 
+            // Checagem de Emergência
             if (stateManager.state.quarantine) {
                 await sendBackupEmail("Quarentena Detectada (API Flag)", stateManager.state);
                 break;
@@ -634,20 +587,30 @@ async function workerLoop() {
 
             updateProgressEmbed().catch(() => {});
             
+            // Delay pós-envio
             if (result.success) {
-                let delay = currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS);
-                if (Math.random() < 0.1) delay += (IS_LOCAL ? 1000 : 30000); 
-                await wait(delay);
+                let d = currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS);
+
+                // 18% das vezes simula "pessoa pensando / distraída" → ultra humano
+                if (Math.random() < EXTRA_LONG_DELAY_CHANCE) {
+                    const extra = IS_LOCAL ? 5000 : EXTRA_LONG_DELAY_MS + Math.floor(Math.random() * 25000);
+                    d += extra;
+                    console.log(`Pensando na vida... +${(extra/1000).toFixed(0)}s extra`);
+                }
+
+                await wait(d);
             } else {
-                const penalty = result.reason === "closed" ? (IS_LOCAL ? 1000 : 5000) : (IS_LOCAL ? 2000 : 20000);
+                const penalty = result.reason === "closed"
+                    ? (IS_LOCAL ? 1000 : 5000)
+                    : (IS_LOCAL ? 2000 : 20000);
                 await wait(penalty);
             }
-
             sentInBatch++;
         }
 
+        // Finalização
         if (state.queue.length === 0 && state.active) {
-            console.log("✅ Fila finalizada com sucesso.");
+            console.log("✅ Fim da Fila.");
             await finalizeSending();
         }
 
@@ -668,46 +631,33 @@ async function workerLoop() {
 function startWorker() {
     if (workerRunning) return;
     workerRunning = true;
-    workerLoop().catch(err => {
-        console.error("💥 Exceção não tratada no Worker:", err);
-        workerRunning = false;
-        stateManager.forceSave();
-    });
+    workerLoop().catch(err => { console.error("Worker Crash:", err); workerRunning = false; stateManager.forceSave(); });
 }
 
 async function finalizeSending() {
     const state = stateManager.state;
     stopProgressUpdater();
-    progressMessageRuntime = null;
-
     const guildId = state.currentAnnounceGuildId;
-    const stats = { ...state.currentRunStats };
-    const progressRef = state.progressMessageRef;
-
+    
     await stateManager.modify(s => {
-        if (guildId && s.queue.length > 0) {
-            s.guildData[guildId].pendingQueue.push(...s.queue);
-        }
+        if (guildId && s.queue.length > 0) s.guildData[guildId].pendingQueue.push(...s.queue);
         s.queue = [];
         s.active = false;
     });
-
     stateManager.forceSave();
 
-    const gd = state.guildData[guildId] || {};
-    const remaining = (gd.pendingQueue?.length || 0) + (gd.failedQueue?.length || 0);
+    const stats = state.currentRunStats;
+    const remaining = (state.guildData[guildId]?.pendingQueue.length || 0);
     const embedColor = remaining === 0 && !state.quarantine ? 0x00FF00 : 0xFF0000;
     
     const embed = new EmbedBuilder()
-        .setTitle("📬 Relatório de Envio")
+        .setTitle("📬 Relatório Final")
         .setColor(embedColor)
         .addFields(
             { name: "✅ Sucesso", value: `${stats.success}`, inline: true },
             { name: "❌ Falhas", value: `${stats.fail}`, inline: true },
-            { name: "🔒 Bloqueados", value: `${stats.closed}`, inline: true },
             { name: "⏳ Pendentes", value: `${remaining}`, inline: true }
-        )
-        .setTimestamp();
+        );
 
     if (state.quarantine) {
         embed.addFields({
@@ -719,28 +669,14 @@ async function finalizeSending() {
 
     const finalText = remaining === 0 ? "✅ Campanha finalizada!" : `⏸️ Parado. Restam ${remaining} membros.`;
 
-    if (progressRef) {
+    if (state.progressMessageRef) {
         try {
-            const ch = await client.channels.fetch(progressRef.channelId).catch(() => null);
-            if (ch?.isTextBased()) {
-                const msg = await ch.messages.fetch(progressRef.messageId).catch(() => null);
-                if (msg) await msg.edit({ content: finalText, embeds: [embed] }).catch(() => {});
-                else await ch.send({ content: finalText, embeds: [embed] }).catch(() => {});
-            }
-        } catch (e) { console.error("❌ Erro postar resumo:", e.message); }
-    }
-
-    if (guildId && remaining === 0) {
-        await stateManager.modify(s => {
-            const gData = s.guildData[guildId];
-            gData.lastAnnounceTime = Date.now();
-            gData.totalSuccess = stats.success;
-            gData.totalFail = stats.fail;
-            gData.totalClosed = stats.closed;
-            gData.processedMembers = []; 
-            gData.failedQueue = [];
-            gData.pendingQueue = [];
-        });
+            const ch = await client.channels.fetch(state.progressMessageRef.channelId);
+            const msg = await ch.messages.fetch(state.progressMessageRef.messageId);
+            await msg.edit({ content: finalText, embeds: [embed] }).catch(async () => {
+                await ch.send({ content: finalText, embeds: [embed] });
+            });
+        } catch (e) {}
     }
 
     await stateManager.modify(s => s.currentAnnounceGuildId = null);
@@ -750,48 +686,24 @@ async function finalizeSending() {
 async function updateProgressEmbed() {
     const state = stateManager.state;
     if (!state.progressMessageRef) return;
-
-    const currentStats = JSON.stringify(state.currentRunStats);
-    if (currentStats === lastEmbedState) return;
-    lastEmbedState = currentStats;
-
     try {
-        if (!progressMessageRuntime) {
-            const ch = await client.channels.fetch(state.progressMessageRef.channelId).catch(() => null);
-            if (!ch) return;
-            progressMessageRuntime = await ch.messages.fetch(state.progressMessageRef.messageId).catch(() => null);
-        }
-        
-        if (!progressMessageRuntime) return;
-
+        const ch = await client.channels.fetch(state.progressMessageRef.channelId);
+        const msg = await ch.messages.fetch(state.progressMessageRef.messageId);
         const embed = new EmbedBuilder()
-            .setTitle("📨 Envio Stealth em Andamento")
+            .setTitle("📨 Enviando...")
             .setColor("#00AEEF")
-            .setDescription(`Delay: ~${(currentDelayBase/1000).toFixed(0)}s | Lote: ${currentBatchBase}`)
-            .addFields(
-                { name: "✅ Sucesso", value: `${state.currentRunStats.success}`, inline: true },
-                { name: "❌ Falhas", value: `${state.currentRunStats.fail}`, inline: true },
-                { name: "🔒 Bloqueados", value: `${state.currentRunStats.closed}`, inline: true },
-                { name: "⏳ Fila", value: `${state.queue.length}`, inline: true }
-            )
-            .setTimestamp();
-
-        await progressMessageRuntime.edit({ embeds: [embed] }).catch(() => {});
-    } catch (e) { }
+            .setDescription(`Fila: ${state.queue.length} | Sucesso: ${state.currentRunStats.success}`);
+        await msg.edit({ embeds: [embed] });
+    } catch (e) {}
 }
 
 function startProgressUpdater() {
     if (progressUpdaterHandle) return;
-    progressUpdaterHandle = setInterval(() => {
-        if (stateManager.state.active) updateProgressEmbed();
-    }, PROGRESS_UPDATE_INTERVAL);
+    progressUpdaterHandle = setInterval(() => { if (stateManager.state.active) updateProgressEmbed(); }, 5000);
 }
 
 function stopProgressUpdater() {
-    if (progressUpdaterHandle) {
-        clearInterval(progressUpdaterHandle);
-        progressUpdaterHandle = null;
-    }
+    if (progressUpdaterHandle) { clearInterval(progressUpdaterHandle); progressUpdaterHandle = null; }
 }
 
 function calculateCooldownInfo(guildData) {
@@ -801,296 +713,293 @@ function calculateCooldownInfo(guildData) {
     if (lastSize === 0) return null;
     const requiredCooldown = Math.max(GUILD_COOLDOWN_MIN_MS, lastSize * COOLDOWN_PENALTY_MS_PER_USER);
     const elapsed = now - guildData.lastAnnounceTime;
-    
     if (elapsed >= requiredCooldown) return "✅ Disponível";
-    
-    const remaining = requiredCooldown - elapsed;
-    const hours = Math.floor(remaining / 3600000);
-    const minutes = Math.ceil((remaining % 3600000) / 60000);
-    return `⏳ ${hours}h ${minutes}min restantes`;
+    return `⏳ ${(requiredCooldown - elapsed)/60000}m restantes`;
 }
 
 // ============================================================================
-// HANDLERS
+// 🎮 LÓGICA CENTRAL DOS COMANDOS (AGNOSTICA À ENTRADA)
 // ============================================================================
 
-client.on("messageCreate", async (message) => {
-    if (message.author.bot || !message.guild) return;
-    const content = message.content.toLowerCase();
-    const cmd = content.split(' ')[0];
-
-    const isAnnounce = cmd.startsWith("!announce");
-    const isResume = cmd === "!resume";
-    const isStop = cmd === "!stop";
-    const isUpdate = cmd === "!update";
-    const isStatus = cmd === "!status";
-
-    if (!isAnnounce && !isResume && !isStop && !isUpdate && !isStatus) return;
-
-    if (!message.member?.permissions.has(PermissionsBitField.Flags.Administrator)) {
-        return message.reply("⛔ Requer permissão de **Administrador**");
+// Função auxiliar para responder (Privado se Slash, Público se Msg)
+async function unifiedReply(ctx, content, embeds = []) {
+    const payload = { content, embeds };
+    if (ctx.isChatInputCommand?.()) { 
+        payload.ephemeral = true; // Resposta invisível no Slash (Sua solicitação)
+        if (ctx.deferred || ctx.replied) return ctx.editReply(payload);
+        return ctx.reply(payload);
     }
+    return ctx.reply(payload);
+}
 
-    const guildId = message.guild.id;
+// Lógica do ANNOUNCE (Serve para !announce e /announce)
+async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
+    const guildId = ctx.guild.id;
     const state = stateManager.state;
-
-    if (!state.guildData[guildId]) {
-        await stateManager.modify(s => {
-            s.guildData[guildId] = {
-                lastAnnounceTime: 0,
-                totalSuccess: 0, totalFail: 0, totalClosed: 0,
-                failedQueue: [], pendingQueue: [],
-                lastRunText: "", lastRunAttachments: [],
-                processedMembers: [], blockedDMs: []
-            };
-        });
-    }
-
     const gd = state.guildData[guildId];
 
-    if (isStatus) {
-        const isActive = state.active && state.currentAnnounceGuildId === guildId;
-        const embed = new EmbedBuilder()
-            .setTitle("📊 Status do Sistema Stealth")
-            .setColor(isActive ? 0x00FF00 : 0x808080)
-            .addFields(
-                { name: "Estado", value: isActive ? "🟢 Ativo" : "⚪ Parado", inline: true },
-                { name: "Pendentes", value: `${gd.pendingQueue.length}`, inline: true },
-                { name: "Bloqueados", value: `${gd.blockedDMs.length}`, inline: true }
-            );
+    if (state.active) return unifiedReply(ctx, "❌ Já existe um envio ativo.");
 
-        if (isActive) {
-            embed.addFields(
-                { name: "✅ Enviadas", value: `${state.currentRunStats.success}`, inline: true },
-                { name: "❌ Erros", value: `${state.currentRunStats.fail}`, inline: true },
-                { name: "🔒 Fechadas", value: `${state.currentRunStats.closed}`, inline: true }
-            );
-        }
+    const parsed = parseSelectors(filtersStr || "");
+    
+    if (!text && !attachmentUrl) return unifiedReply(ctx, "❌ Envie texto ou anexo.");
 
-        const cooldownInfo = calculateCooldownInfo(gd);
-        if (cooldownInfo) embed.addFields({ name: "⏰ Cooldown", value: cooldownInfo, inline: false });
-        
-        return message.reply({ embeds: [embed] });
+    const totalRemaining = gd.pendingQueue.length + gd.failedQueue.length;
+    if (totalRemaining > 0 && !parsed.hasForce) {
+        return unifiedReply(ctx, `⚠️ Há **${totalRemaining}** pendentes. Use \`resume\` ou adicione \`force\` nos filtros.`);
     }
 
-    if (isStop) {
-        if (!state.active || state.currentAnnounceGuildId !== guildId) return message.reply("⚠️ Nenhum envio ativo.");
-        await stateManager.modify(s => s.active = false);
-        await sendBackupEmail("Parada Manual (!stop)", stateManager.state);
-        return message.reply("⏸️ Envio pausado.");
+    const cooldownInfo = calculateCooldownInfo(gd);
+    if (!IS_LOCAL && cooldownInfo && cooldownInfo.includes("restantes")) {
+        return unifiedReply(ctx, `⛔ **Cooldown Ativo:**\n${cooldownInfo}`);
     }
 
-    if (isUpdate) {
-        if (!gd.lastRunText && gd.lastRunAttachments.length === 0) return message.reply("❌ Nenhuma campanha anterior.");
-        const members = await getCachedMembers(message.guild);
-        const newIds = [];
-        members.forEach(m => {
-            if (!m.user.bot && !gd.processedMembers.includes(m.id) && !gd.blockedDMs.includes(m.id)) {
-                newIds.push(m.id);
-            }
-        });
-        if (newIds.length === 0) return message.reply("✅ Nenhum membro novo.");
-        const isActive = state.active && state.currentAnnounceGuildId === guildId;
+    if (totalRemaining > 0 && parsed.hasForce) {
         await stateManager.modify(s => {
-            if (isActive) s.queue.push(...newIds);
-            else s.guildData[guildId].pendingQueue.push(...newIds);
-            newIds.forEach(id => {
-                if (!s.guildData[guildId].processedMembers.includes(id)) s.guildData[guildId].processedMembers.push(id);
-            });
-        });
-        return message.reply(`➕ Adicionados **${newIds.length}** membros.`);
-    }
-
-    // --- COMANDO: RESUME ---
-    if (isResume) {
-        if (state.active) {
-            return message.reply("⚠️ Já existe um envio ativo globalmente");
-        }
-
-        let stateToLoad = null;
-        let resumeSource = "local";
-
-        // 1. Verifica e processa o anexo JSON
-        if (message.attachments.size > 0) {
-            const jsonResult = await readAttachmentJSON(message);
-            if (!jsonResult.success) {
-                return message.reply(jsonResult.error);
-            }
-            
-            if (jsonResult.state.currentAnnounceGuildId !== guildId) {
-                return message.reply("❌ O arquivo de estado pertence a outro servidor.");
-            }
-            
-            stateToLoad = jsonResult.state;
-            resumeSource = "anexo";
-        }
-        
-        // 2. Carrega o estado do JSON para a memória (se houver)
-        if (stateToLoad) {
-            const tempState = stateManager.load(stateToLoad);
-            if (!tempState) return message.reply("❌ Erro ao carregar arquivo.");
-            // Mescla o estado do arquivo com o estado atual
-            await stateManager.modify(s => Object.assign(s, tempState));
-        }
-        
-        const currentState = stateManager.state;
-        const currentGd = currentState.guildData[guildId];
-
-        // === CORREÇÃO CRÍTICA AQUI ===
-        // Reconstrói a fila somando:
-        // 1. currentState.queue (IDs que vieram dentro do JSON)
-        // 2. currentGd.pendingQueue (IDs que estavam na memória pendentes)
-        // 3. currentGd.failedQueue (IDs que falharam antes)
-        const allIds = [...new Set([
-            ...currentState.queue, 
-            ...currentGd.pendingQueue, 
-            ...currentGd.failedQueue
-        ])].filter(id => !currentGd.blockedDMs.includes(id)); // Filtra quem bloqueou DM
-
-        if (allIds.length === 0) {
-            return message.reply(`✅ Nenhum membro válido para retomar (${resumeSource}).`);
-        }
-
-        // Verifica se tem texto/anexo para enviar (prioriza o do JSON, senão pega o da memória)
-        const textToSend = currentState.text || currentGd.lastRunText;
-        const attachToSend = (currentState.attachments && currentState.attachments.length > 0) 
-            ? currentState.attachments 
-            : currentGd.lastRunAttachments;
-
-        if (!textToSend && (!attachToSend || attachToSend.length === 0)) {
-            return message.reply("❌ Dados da campanha (texto/imagem) perdidos ou vazios.");
-        }
-
-        // 3. Atualiza o estado para iniciar
-        await stateManager.modify(s => {
-            s.active = true;
-            s.quarantine = false; // Reseta flag de quarentena
-            s.currentAnnounceGuildId = guildId;
-            
-            // Garante que o texto e anexo ativos sejam os corretos
-            s.text = textToSend;
-            s.attachments = attachToSend || [];
-            
-            s.queue = allIds; // Define a fila completa
-            s.currentRunStats = { success: 0, fail: 0, closed: 0 };
-            
-            // Limpa as filas de espera da memória, pois já foram movidas para a fila ativa
             s.guildData[guildId].pendingQueue = [];
             s.guildData[guildId].failedQueue = [];
         });
+    }
 
-        const progressMsg = await message.reply(`🔄 Retomando envio (${resumeSource}) para **${allIds.length}** membros...`);
+    const members = await getCachedMembers(ctx.guild);
+    const queue = [];
+    const processedSet = new Set();
+
+    members.forEach(m => {
+        if (m.user.bot) return;
+        if (gd.blockedDMs.includes(m.id)) return;
+        if (parsed.only.size > 0 && !parsed.only.has(m.id)) return;
+        if (parsed.ignore.has(m.id)) return;
+        queue.push(m.id);
+        processedSet.add(m.id);
+    });
+
+    if (queue.length === 0) return unifiedReply(ctx, "❌ Nenhum membro encontrado.");
+
+    const attachments = attachmentUrl ? [attachmentUrl] : [];
+
+    await stateManager.modify(s => {
+        s.active = true;
+        s.quarantine = false;
+        s.currentAnnounceGuildId = guildId;
+        s.text = text || "";
+        s.attachments = attachments;
+        s.queue = queue;
+        s.currentRunStats = { success: 0, fail: 0, closed: 0 };
+        s.ignore = parsed.ignore;
+        s.only = parsed.only;
         
-        await stateManager.modify(s => {
-            s.progressMessageRef = {
-                channelId: progressMsg.channel.id,
-                messageId: progressMsg.id
-            };
-        });
+        const gData = s.guildData[guildId];
+        gData.lastRunText = text || "";
+        gData.lastRunAttachments = attachments;
+        gData.processedMembers = [...processedSet];
+    });
 
-        startProgressUpdater();
-        startWorker();
-        return;
+    const msgContent = `🚀 Iniciando envio Stealth para **${queue.length}** membros...`;
+    
+    // Para atualizar progresso, precisamos do ID da mensagem.
+    // No Slash Command, precisamos do fetchReply.
+    let progressMsg;
+    if (ctx.isChatInputCommand?.()) {
+        await unifiedReply(ctx, msgContent);
+        progressMsg = await ctx.fetchReply();
+    } else {
+        progressMsg = await unifiedReply(ctx, msgContent);
     }
 
-    if (isAnnounce) {
-        if (state.active) return message.reply("❌ Já existe um envio ativo.");
-        const parsed = parseSelectors(message.content.slice(cmd.length).trim());
-        const text = parsed.cleaned;
-        const attachments = [...message.attachments.values()];
+    await stateManager.modify(s => {
+        s.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id };
+    });
+    
+    startProgressUpdater();
+    startWorker();
+}
 
-        if (!text && attachments.length === 0) return message.reply("❌ Envie texto ou anexo.");
-        if (attachments.length > 0) {
-            const validation = validateAttachments(attachments);
-            if (!validation.valid) return message.reply(validation.error);
-        }
+// Lógica do RESUME (Serve para !resume e /resume)
+async function execResume(ctx, attachmentUrl) {
+    if (stateManager.state.active) return unifiedReply(ctx, "⚠️ Já ativo.");
 
-        const totalRemaining = gd.pendingQueue.length + gd.failedQueue.length;
-        if (totalRemaining > 0 && !parsed.hasForce) {
-            return message.reply(`⚠️ Há **${totalRemaining}** pendentes. Use \`!resume\` ou adicione \`force\`.`);
-        }
+    let stateToLoad = null;
+    let resumeSource = "local";
 
-        const cooldownInfo = calculateCooldownInfo(gd);
-        if (!IS_LOCAL && cooldownInfo && cooldownInfo.includes("restantes")) {
-            return message.reply(`⛔ **Cooldown Ativo:**\n${cooldownInfo}`);
-        }
-
-        if (totalRemaining > 0 && parsed.hasForce) {
-            await stateManager.modify(s => {
-                s.guildData[guildId].pendingQueue = [];
-                s.guildData[guildId].failedQueue = [];
-            });
-            await message.reply(`🗑️ Fila anterior descartada.`);
-        }
-
-        const members = await getCachedMembers(message.guild);
-        const queue = [];
-        const processedSet = new Set();
-        const mode = cmd.includes("for") ? "for" : "announce";
-
-        members.forEach(m => {
-            if (m.user.bot) return;
-            // Agora blockedDMs é array, então .includes funciona corretamente
-            if (gd.blockedDMs.includes(m.id)) return;
-            if (mode === "for" && !parsed.only.has(m.id)) return;
-            if (mode === "announce" && parsed.ignore.has(m.id)) return;
-            queue.push(m.id);
-            processedSet.add(m.id);
-        });
-
-        if (queue.length === 0) return message.reply("❌ Nenhum membro encontrado.");
-
-        const formattedAttachments = attachments.map(a => a.url);
-        await stateManager.modify(s => {
-            s.active = true;
-            s.quarantine = false;
-            s.currentAnnounceGuildId = guildId;
-            s.text = text;
-            s.attachments = formattedAttachments;
-            s.queue = queue;
-            s.currentRunStats = { success: 0, fail: 0, closed: 0 };
-            s.ignore = parsed.ignore;
-            s.only = parsed.only;
-            const gData = s.guildData[guildId];
-            gData.lastRunText = text;
-            gData.lastRunAttachments = formattedAttachments;
-            gData.processedMembers = [...processedSet];
-        });
-
-        const progressMsg = await message.reply(`🚀 Iniciando envio Stealth para **${queue.length}** membros...`);
-        await stateManager.modify(s => {
-            s.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id };
-        });
-        startProgressUpdater();
-        startWorker();
+    if (attachmentUrl) {
+        const jsonResult = await readAttachmentJSON(attachmentUrl);
+        if (!jsonResult.success) return unifiedReply(ctx, jsonResult.error);
+        if (jsonResult.state.currentAnnounceGuildId !== ctx.guild.id) return unifiedReply(ctx, "❌ JSON de outro servidor.");
+        stateToLoad = jsonResult.state;
+        resumeSource = "anexo";
     }
-});
 
-// ============================================================================
-// INICIALIZAÇÃO
-// ============================================================================
+    if (stateToLoad) {
+        const tempState = stateManager.load(stateToLoad);
+        if (!tempState) return unifiedReply(ctx, "❌ Erro ao carregar arquivo.");
+        await stateManager.modify(s => Object.assign(s, tempState));
+    }
 
-client.on("ready", async () => {
-    console.log(`✅ Bot online como: ${client.user.tag} (Modo Stealth Ativado)`);
+    const s = stateManager.state;
+    const gd = s.guildData[ctx.guild.id];
+    
+    // CORREÇÃO: Soma todas as filas (JSON + Pendente + Falha)
+    const allIds = [...new Set([
+        ...s.queue, 
+        ...gd.pendingQueue, 
+        ...gd.failedQueue
+    ])].filter(id => !gd.blockedDMs.includes(id));
+
+    if (allIds.length === 0) return unifiedReply(ctx, "✅ Ninguém para enviar.");
+
+    const textToSend = s.text || gd.lastRunText;
+    const attachToSend = (s.attachments && s.attachments.length > 0) ? s.attachments : gd.lastRunAttachments;
+
+    if (!textToSend && (!attachToSend || attachToSend.length === 0)) {
+        return unifiedReply(ctx, "❌ Dados perdidos/vazios.");
+    }
+
+    await stateManager.modify(st => {
+        st.active = true;
+        st.quarantine = false;
+        st.currentAnnounceGuildId = ctx.guild.id;
+        st.queue = allIds;
+        st.text = textToSend;
+        st.attachments = attachToSend || [];
+        st.currentRunStats = { success: 0, fail: 0, closed: 0 };
+        st.guildData[ctx.guild.id].pendingQueue = [];
+        st.guildData[ctx.guild.id].failedQueue = [];
+    });
+
+    const msgContent = `🔄 Retomando envio (${resumeSource}) para **${allIds.length}** membros...`;
+    let progressMsg;
+    
+    if (ctx.isChatInputCommand?.()) {
+        await unifiedReply(ctx, msgContent);
+        progressMsg = await ctx.fetchReply();
+    } else {
+        progressMsg = await unifiedReply(ctx, msgContent);
+    }
+
+    await stateManager.modify(st => {
+        st.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id };
+    });
+    startProgressUpdater();
+    startWorker();
+}
+
+// Lógica do STOP
+async function execStop(ctx) {
+    await stateManager.modify(s => s.active = false);
+    await sendBackupEmail("Stop Manual", stateManager.state);
+    unifiedReply(ctx, "🛑 Parado (Backup enviado).");
+}
+
+// Lógica do STATUS
+async function execStatus(ctx) {
     const state = stateManager.state;
+    const gd = state.guildData[ctx.guild.id] || {};
+    const isActive = state.active && state.currentAnnounceGuildId === ctx.guild.id;
     
-    if (state.progressMessageRef) {
-        try {
-            const ch = await client.channels.fetch(state.progressMessageRef.channelId).catch(() => null);
-            if (ch) progressMessageRuntime = await ch.messages.fetch(state.progressMessageRef.messageId).catch(() => null);
-        } catch (e) { }
+    const embed = new EmbedBuilder()
+        .setTitle("📊 Status Stealth")
+        .setColor(isActive ? 0x00FF00 : 0x808080)
+        .addFields(
+            { name: "Estado", value: isActive ? "🟢 Ativo" : "⚪ Parado", inline: true },
+            { name: "Pendentes", value: `${gd.pendingQueue?.length || 0}`, inline: true },
+            { name: "Fila Atual", value: `${state.queue.length}`, inline: true }
+        );
+        
+    unifiedReply(ctx, "", [embed]);
+}
+
+// ============================================================================
+// 📝 REGISTRO & HANDLERS DE COMANDOS
+// ============================================================================
+
+// Registra comandos "/" automaticamente ao iniciar
+async function registerSlashCommands() {
+    const commands = [
+        new SlashCommandBuilder()
+            .setName('announce')
+            .setDescription('Inicia novo envio (Invisível)')
+            .addStringOption(opt => opt.setName('texto').setDescription('Mensagem').setRequired(true))
+            .addAttachmentOption(opt => opt.setName('anexo').setDescription('Imagem opcional'))
+            .addStringOption(opt => opt.setName('filtros').setDescription('Ex: force, +{ID}')),
+        new SlashCommandBuilder()
+            .setName('resume')
+            .setDescription('Retoma envio (Invisível)')
+            .addAttachmentOption(opt => opt.setName('arquivo').setDescription('JSON Backup')),
+        new SlashCommandBuilder()
+            .setName('stop')
+            .setDescription('Para o envio (Invisível)'),
+        new SlashCommandBuilder()
+            .setName('status')
+            .setDescription('Vê status (Invisível)')
+    ];
+
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    try {
+        console.log('Registrando Slash Commands...');
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('✅ Slash Commands Registrados!');
+    } catch (e) { console.error(e); }
+}
+
+// HANDLER: SLASH (/)
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: "⛔ Sem permissão.", ephemeral: true });
     }
-    
-    if (state.active && state.queue.length > 0) {
-        console.log(`🔄 Auto-Resume: ${state.queue.length} membros...`);
-        startProgressUpdater();
-        startWorker();
-    } else if (state.active && state.queue.length === 0) {
-        await stateManager.modify(s => { s.active = false; s.currentAnnounceGuildId = null; });
-        stateManager.forceSave();
+
+    const { commandName } = interaction;
+
+    if (commandName === 'announce') {
+        const texto = interaction.options.getString('texto');
+        const anexo = interaction.options.getAttachment('anexo');
+        const filtros = interaction.options.getString('filtros');
+        await execAnnounce(interaction, texto, anexo ? anexo.url : null, filtros);
+    } else if (commandName === 'resume') {
+        const arquivo = interaction.options.getAttachment('arquivo');
+        await execResume(interaction, arquivo ? arquivo.url : null);
+    } else if (commandName === 'stop') {
+        await execStop(interaction);
+    } else if (commandName === 'status') {
+        await execStatus(interaction);
     }
 });
 
+// HANDLER: MENSAGEM DE CHAT (PREFIXO !)
+client.on("messageCreate", async (message) => {
+    if (message.author.bot || !message.guild) return;
+    const content = message.content;
+    if (!content.startsWith('!')) return;
+
+    const args = content.slice(1).trim().split(/ +/);
+    const cmd = args.shift().toLowerCase();
+
+    if (!message.member?.permissions.has(PermissionsBitField.Flags.Administrator)) return;
+
+    if (cmd === 'announce') {
+        const fullContent = content.slice(9).trim();
+        const attachment = message.attachments.first();
+        // No prefixo, filtros e texto são a mesma string, o parseSelectors lida com isso internamente
+        await execAnnounce(message, fullContent, attachment ? attachment.url : null, fullContent);
+    } else if (cmd === 'resume') {
+        const attachment = message.attachments.first();
+        await execResume(message, attachment ? attachment.url : null);
+    } else if (cmd === 'stop') {
+        await execStop(message);
+    } else if (cmd === 'status') {
+        await execStatus(message);
+    }
+});
+
+// INICIALIZAÇÃO
+client.on("ready", async () => {
+    console.log(`✅ Bot online como: ${client.user.tag}`);
+    await registerSlashCommands();
+    if (stateManager.state.active) startWorker();
+});
+
+// Captura de erros fatais para não derrubar o processo
 process.on("unhandledRejection", (err) => console.error("❌ Unhandled Rejection:", err));
 process.on("uncaughtException", (err) => {
     console.error("❌ Uncaught Exception:", err);
