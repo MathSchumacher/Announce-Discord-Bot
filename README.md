@@ -353,7 +353,7 @@ Código desenvolvido por **Matheus Schumacher**. Uso livre sob licença MIT.
 </p>
 
 <p align="center">
-  <img src="./img/qrcode.webp" width="300" alt="QR Code PIX para doação">
+  <img src="./img/qrcode.png" width="470" alt="QR Code PIX para doação">
 </p>
 
 <p align="center">
