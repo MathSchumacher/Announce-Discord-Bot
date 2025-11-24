@@ -368,18 +368,25 @@ async function getAiVariation(originalText, globalname) {
     if (!model || !originalText || originalText.length < 3) return originalText;
     try {
         const prompt = `
-        Aja como um **Motor de Variação de Texto (Spintax Generator)**. Sua **única e CRÍTICA função** é reescrever a mensagem abaixo, destinada a "${globalname}", gerando uma variação **aleatória e única** a cada nova requisição.
+        Aja como um **Motor de Variação de Texto de Alta Fidelidade**.
+        
+        Sua missão é gerar uma variação da mensagem abaixo destinada a "${globalname}".
+        
+        ⚠️ **REGRAS DE ESTRUTURA (INVIOLÁVEIS):**
+        1. **PRESERVAÇÃO TOTAL:** Você DEVE manter **EXATAMENTE** a mesma estrutura visual, incluindo **TODAS as quebras de linha**, listas com bolinhas (*), espaçamentos e emojis.
+        2. **NÃO** transforme listas verticais em texto corrido/horizontal.
+        3. **NÃO** remova ou altere links (http/https).
+        
+        **Regras de Variação:**
+        1. Escolha **UMA ÚNICA PALAVRA** do texto (que não seja chave ou técnica) e substitua por um sinônimo.
+        2. Se houver variáveis como {nome} ou {username}, substitua por "${globalname}".
+        3. Mantenha o idioma original.
+        4. Retorne APENAS o texto final, sem aspas e sem comentários.
 
-        **Regras de Saída (Siga-as Rigorosamente):**
-        1. **MUDANÇA ÚNICA E ALEATÓRIA:** Você DEVE selecionar APENAS UMA ÚNICA PALAVRA da "Mensagem Original" e substituí-la por um sinônimo. O sinônimo e a palavra escolhida DEVERÃO ser selecionados de forma **randômica** a cada vez que este prompt for processado. A alteração é compulsória.
-        2. **PRIORIDADE DE PERSONALIZAÇÃO:** Se a "Mensagem Original" contiver variáveis ou referências de nome de usuário (como {nome}, {username}, ou qualquer texto que claramente se refira ao destinatário), substitua **todas** essas referências pela variável de destino **"${globalname}"**. Esta substituição não conta como a mudança única da Regra 1.
-        3. Mantenha EXATAMENTE o mesmo significado, tom e intenção da "Mensagem Original".
-        4. Se houver links (http...), MANTENHA-OS IDÊNTICOS.
-        5. Mantenha o restante da frase (incluindo pontuação, quebra de linha e estrutura) EXATAMENTE IDÊNTICO ao original.
-        6. Mantenha o texto de saída no **mesmo idioma** da "Mensagem Original".
-        7. NÃO use aspas, comentários ou explicações na resposta. Apenas o texto puro da mensagem reescrita.
-
-        Mensagem Original: "${originalText}"
+        Mensagem Original (entre aspas triplas):
+        """
+        ${originalText}
+        """
         `;
                 
         const result = await model.generateContent(prompt);
@@ -390,6 +397,8 @@ async function getAiVariation(originalText, globalname) {
             console.warn("⚠️ IA retornou vazio. Usando original.");
             return originalText;
         }
+        
+        // Remove aspas extras que a IA possa ter colocado no início/fim e espaços extras
         return text.replace(/^"|"$/g, '').trim();
     } catch (error) {
         console.warn(`⚠️ Erro IA (Fallback Original): ${error.message}`);
