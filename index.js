@@ -773,25 +773,32 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
 
     if (state.active) return unifiedReply(ctx, "❌ Já existe um envio ativo.");
 
-    // 1. Processa filtros e limpa o texto dos seletores (IDs)
+    // 1. Processa filtros
     const parsed = parseSelectors(filtersStr || "");
     let rawInputText = text || "";
     
-    // O texto final a ser usado na fila (limpo de IDs)
+    // Texto base limpo dos IDs
     let messageText = parsed.cleaned || rawInputText.replace(/([+-])\{(\d{5,30})\}/g, "").trim();
 
-    // ------------------------------------------------------------------
-    // 💡 TRATAMENTO DE QUEBRA DE LINHA PARA /ANNOUNCE
-    // O Discord pode achatar as quebras de linha em Slash Commands.
-    // Tentamos reintroduzir \n\n onde houver múltiplos espaços.
-    // ------------------------------------------------------------------
+    // ==================================================================
+    // 🏗️ MOTOR DE RECONSTRUÇÃO DE LAYOUT (CORREÇÃO SLASH)
+    // ==================================================================
     if (isSlash && messageText) {
-        // Substitui quebras de linha que viraram múltiplos espaços por \n\n (parágrafo novo)
-        messageText = messageText.replace(/  +/g, '\n\n').replace(/\r/g, ''); 
-        // Remove espaços duplos remanescentes se não forem para nova linha
-        messageText = messageText.replace(/\n\n /g, '\n\n'); 
+        // 1. TRANSFORMA MÚLTIPLOS ESPAÇOS EM QUEBRA DE PARÁGRAFO (\n\n)
+        // Isso força a linha em branco que foi perdida pelo Discord.
+        messageText = messageText.replace(/ {2,}/g, '\n\n');
+
+        // 2. RECUPERA OS BULLET POINTS - IGNORA O HÍFEN (-)
+        messageText = messageText.replace(/ ([*•+]) /g, '\n$1 ');
+
+        // 3. RECUPERA TÍTULOS (Markdown Headers)
+        messageText = messageText.replace(/ (#+) /g, '\n\n$1 ');
+
+        // 4. Correção fina: Remove espaços sobrando no início das linhas novas
+        // Isso pode ser necessário após a reconstrução de bullets.
+        messageText = messageText.replace(/\n /g, '\n');
     }
-    // ------------------------------------------------------------------
+    // ==================================================================
 
     if (!messageText && !attachmentUrl) return unifiedReply(ctx, "❌ Envie texto ou anexo.");
 
@@ -834,7 +841,7 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.active = true;
         s.quarantine = false;
         s.currentAnnounceGuildId = guildId;
-        s.text = messageText; // <<< AGORA USA O TEXTO TRATADO E LIMPO
+        s.text = messageText; // Usa o texto reconstruído
         s.attachments = attachments;
         s.queue = queue;
         s.currentRunStats = { success: 0, fail: 0, closed: 0 };
@@ -858,13 +865,12 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         
         try {
             const dmChannel = await ctx.user.createDM();
-            const dmEmbed = new EmbedBuilder()
+            const initialEmbed = new EmbedBuilder()
                 .setTitle("📨 Enviando...")
                 .setColor("#00AEEF")
-                .setDescription(`Fila: ${queue.length} | Sucesso: 0`);
+                .setDescription(`Fila: ${queue.length} | Sucesso: 0 | Fechadas: 0`);
             
-            progressMsg = await dmChannel.send({ content: msgContent, embeds: [dmEmbed] });
-            
+            progressMsg = await dmChannel.send({ content: msgContent, embeds: [initialEmbed] });
             await ctx.editReply({ content: "✅ Painel de controle enviado para sua DM! Acompanhe por lá." });
         } catch (e) {
             console.error("Erro ao enviar DM inicial:", e);
@@ -872,7 +878,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
             await stateManager.modify(s => s.active = false);
             return;
         }
-
     } else {
         progressMsg = await unifiedReply(ctx, msgContent);
     }
