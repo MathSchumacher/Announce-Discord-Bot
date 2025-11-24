@@ -360,49 +360,63 @@ async function readAttachmentJSON(url) {
     });
 }
 
+
 // ============================================================================
-// 🧠 PROCESSAMENTO DE IA (VARIAÇÃO E STEALTH)
+// 🧠 PROCESSAMENTO DE IA - MÉTODO CIRÚRGICO ULTRA-SEGURO (V5 - COMPLETO)
 // ============================================================================
 
 async function getAiVariation(originalText, globalname) {
-    if (!model || !originalText || originalText.length < 3) return originalText;
-    try {
-        const prompt = `
-        Aja como um **Motor de Variação de Texto de Alta Fidelidade**.
-        
-        Sua missão é gerar uma variação da mensagem abaixo destinada a "${globalname}".
-        
-        ⚠️ **REGRAS DE ESTRUTURA (INVIOLÁVEIS):**
-        1. **PRESERVAÇÃO TOTAL:** Você DEVE manter **EXATAMENTE** a mesma estrutura visual, incluindo **TODAS as quebras de linha**, listas com bolinhas (*), espaçamentos e emojis.
-        2. **NÃO** transforme listas verticais em texto corrido/horizontal.
-        3. **NÃO** remova ou altere links (http/https).
-        
-        **Regras de Variação:**
-        1. Escolha **UMA ÚNICA PALAVRA** do texto (que não seja chave ou técnica) e substitua por um sinônimo.
-        2. Se houver variáveis como {nome} ou {username}, substitua por "${globalname}".
-        3. Mantenha o idioma original.
-        4. Retorne APENAS o texto final, sem aspas e sem comentários.
+    // 1. Substituição básica de variáveis (Nome) - Feito via Código, não IA, para 100% de precisão.
+    // Garante que se houver {name} ou {username}, eles são trocados AGORA.
+    let finalText = originalText.replace(/\{name\}|\{username\}|\{nome\}/gi, globalname);
 
-        Mensagem Original (entre aspas triplas):
-        """
-        ${originalText}
-        """
-        `;
-                
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        let text = response.text();
+    // Se a IA não estiver disponível ou o texto for muito curto, retorna o texto limpo com nome
+    if (!model || finalText.length < 10) return finalText;
+
+    try {
+        // Sanitiza o nome para evitar injeção no prompt (medida de segurança)
+        const safeGlobalName = globalname.replace(/["{}\\]/g, '');
         
-        if (!text || text.trim().length === 0) {
-            console.warn("⚠️ IA retornou vazio. Usando original.");
-            return originalText;
+        // 2. O prompt instrui a IA a ser um motor de sugestão estrito e evita palavras "perigosas".
+        const prompt = `
+        FUNÇÃO: Você é um motor de sugestão de sinônimos estrito.
+        MISSÃO: Encontre UMA única palavra ou expressão curta (máximo 2 palavras) no texto abaixo que possa ser substituída por um sinônimo.
+
+        ⚠️ **REGRAS INVIOLÁVEIS DE SELEÇÃO E CONTEÚDO:**
+        1. **LINKS:** PROIBIDO escolher palavras que fazem parte de URLs (http/https). LINKS DEVEM PERMANECER INALTERADOS.
+        2. **FORMATAÇÃO:** PROIBIDO escolher palavras adjacentes a marcadores de lista (*, -) ou dentro de **negrito**, *itálico* ou # títulos.
+        3. **VARIÁVEIS:** Se o texto continha variáveis como {name} ou {username} (agora substituídas por "${safeGlobalName}"), mantenha o foco em outras palavras.
+        4. O substituto deve manter a capitalização (caixa alta/baixa) da palavra original.
+
+        Responda ESTRITAMENTE neste formato JSON:
+        {
+            "alvo": "palavra_exata_que_está_no_texto",
+            "substituto": "sinônimo_para_essa_palavra"
+        }
+
+        Texto:
+        """${finalText}"""
+        `;
+
+        const result = await model.generateContent(prompt);
+        const response = await result.response.text();
+
+        // 3. Processamento e execução da troca (feito via JavaScript para garantir formatação)
+        const jsonStr = response.replace(/```json|```/g, '').trim();
+        const data = JSON.parse(jsonStr);
+
+        if (data.alvo && data.substituto && finalText.includes(data.alvo)) {
+            // JavaScript executa a troca. A estrutura visual do finalText não é afetada.
+            return finalText.replace(data.alvo, data.substituto);
         }
         
-        // Remove aspas extras que a IA possa ter colocado no início/fim e espaços extras
-        return text.replace(/^"|"$/g, '').trim();
+        // Se a IA falhar na sugestão (JSON inválido, palavra não encontrada), retorna o texto original.
+        return finalText;
+
     } catch (error) {
-        console.warn(`⚠️ Erro IA (Fallback Original): ${error.message}`);
-        return originalText;
+        console.warn(`⚠️ Erro na V5 Cirúrgica. Usando fallback seguro: ${error.message}`);
+        // Em caso de falha, retorna o texto intacto.
+        return finalText; 
     }
 }
 
@@ -759,9 +773,27 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
 
     if (state.active) return unifiedReply(ctx, "❌ Já existe um envio ativo.");
 
+    // 1. Processa filtros e limpa o texto dos seletores (IDs)
     const parsed = parseSelectors(filtersStr || "");
+    let rawInputText = text || "";
     
-    if (!text && !attachmentUrl) return unifiedReply(ctx, "❌ Envie texto ou anexo.");
+    // O texto final a ser usado na fila (limpo de IDs)
+    let messageText = parsed.cleaned || rawInputText.replace(/([+-])\{(\d{5,30})\}/g, "").trim();
+
+    // ------------------------------------------------------------------
+    // 💡 TRATAMENTO DE QUEBRA DE LINHA PARA /ANNOUNCE
+    // O Discord pode achatar as quebras de linha em Slash Commands.
+    // Tentamos reintroduzir \n\n onde houver múltiplos espaços.
+    // ------------------------------------------------------------------
+    if (isSlash && messageText) {
+        // Substitui quebras de linha que viraram múltiplos espaços por \n\n (parágrafo novo)
+        messageText = messageText.replace(/  +/g, '\n\n').replace(/\r/g, ''); 
+        // Remove espaços duplos remanescentes se não forem para nova linha
+        messageText = messageText.replace(/\n\n /g, '\n\n'); 
+    }
+    // ------------------------------------------------------------------
+
+    if (!messageText && !attachmentUrl) return unifiedReply(ctx, "❌ Envie texto ou anexo.");
 
     const totalRemaining = gd.pendingQueue.length + gd.failedQueue.length;
     if (totalRemaining > 0 && !parsed.hasForce) {
@@ -802,7 +834,7 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.active = true;
         s.quarantine = false;
         s.currentAnnounceGuildId = guildId;
-        s.text = text || "";
+        s.text = messageText; // <<< AGORA USA O TEXTO TRATADO E LIMPO
         s.attachments = attachments;
         s.queue = queue;
         s.currentRunStats = { success: 0, fail: 0, closed: 0 };
@@ -813,7 +845,7 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.initiatorId = initiatorId; 
         
         const gData = ensureGuildData(s, guildId);
-        gData.lastRunText = text || "";
+        gData.lastRunText = messageText;
         gData.lastRunAttachments = attachments;
         gData.processedMembers = [...processedSet];
     });
@@ -822,7 +854,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     
     let progressMsg;
     if (ctx.isChatInputCommand?.()) {
-        // 🚨 LÓGICA MODIFICADA: SE SLASH, ENVIA PAINEL NA DM
         await ctx.deferReply({ ephemeral: true });
         
         try {
@@ -832,10 +863,8 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
                 .setColor("#00AEEF")
                 .setDescription(`Fila: ${queue.length} | Sucesso: 0`);
             
-            // Envia o painel real na DM
             progressMsg = await dmChannel.send({ content: msgContent, embeds: [dmEmbed] });
             
-            // Responde no Slash apenas confirmando
             await ctx.editReply({ content: "✅ Painel de controle enviado para sua DM! Acompanhe por lá." });
         } catch (e) {
             console.error("Erro ao enviar DM inicial:", e);
@@ -845,7 +874,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         }
 
     } else {
-        // LÓGICA PADRÃO: Envia no canal (Prefixo)
         progressMsg = await unifiedReply(ctx, msgContent);
     }
 
