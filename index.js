@@ -2,12 +2,13 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const http = require("http"); // ← NOVO: Necessário para o servidor Anti-Freeze
 const nodemailer = require("nodemailer");
-const { 
-    Client, 
-    GatewayIntentBits, 
-    Partials, 
-    EmbedBuilder, 
+const {
+    Client,
+    GatewayIntentBits,
+    Partials,
+    EmbedBuilder,
     PermissionsBitField,
     REST,
     Routes,
@@ -16,11 +17,34 @@ const {
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // ============================================================================
+// 🔌 SERVIDOR ANTI-FREEZE (MANTÉM O RAILWAY ACORDADO) - PRIORIDADE MÁXIMA
+// ============================================================================
+const PORT = process.env.PORT || 8080;
+
+const server = http.createServer((req, res) => {
+    const uptime = process.uptime();
+    const status = {
+        status: "online",
+        uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+        active: stateManager?.state?.active || false,
+        queue: stateManager?.state?.queue?.length || 0,
+        timestamp: new Date().toISOString()
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status, null, 2));
+});
+
+server.listen(PORT, () => {
+    console.log(`🛡️ Escudo Anti-Freeze Ativado na porta ${PORT}`);
+    console.log(`📡 Health Check disponível: http://localhost:${PORT}`);
+});
+
+// ============================================================================
 // 🧠 CONFIGURAÇÃO DA INTELIGÊNCIA ARTIFICIAL (GEMINI)
 // ============================================================================
-
-const genAI = process.env.GEMINI_API_KEY 
-    ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) 
+const genAI = process.env.GEMINI_API_KEY
+    ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
     : null;
 
 const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.5-flash" }) : null;
@@ -28,61 +52,67 @@ const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.5-flash" }) : 
 // ============================================================================
 // 🌍 DETECÇÃO DE AMBIENTE (LOCAL vs NUVEM)
 // ============================================================================
-
 const IS_CLOUD = !!(process.env.DYNO || process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.PORT);
 const IS_LOCAL = !IS_CLOUD;
 
 console.log(`🌍 Ambiente Detectado: ${IS_LOCAL ? 'LOCAL (PC - Testes Rápidos)' : 'NUVEM (Produção - Stealth Ativo)'}`);
-
 // ============================================================================
 // ⚙️ CONFIGURAÇÕES GERAIS E CONSTANTES DE SEGURANÇA
 // ============================================================================
-
 const RETRY_LIMIT = 3;
 const STATE_FILE = path.resolve(__dirname, "state.json");
 const TARGET_EMAIL = process.env.TARGET_EMAIL || "matheusmschumacher@gmail.com";
 
-let currentDelayBase = 22000;
-let currentBatchBase = 14;
+// 🚀 OTIMIZAÇÃO: Delay base reduzido (de 22s para 10s) e Lote aumentado (de 14 para 18)
+let currentDelayBase = 10000; 
+let currentBatchBase = 18;
 
-const DELAY_RANDOM_MS = 22000;        
-const BATCH_VARIANCE = 8;             
-const MIN_BATCH_PAUSE_MS = 9  * 60 * 1000;  
-const MAX_BATCH_PAUSE_MS = 18 * 60 * 1000;  
+// 🚀 OTIMIZAÇÃO: Variação menor para manter o ritmo constante
+const DELAY_RANDOM_MS = 8000;
+const BATCH_VARIANCE = 8;
 
-const EXTRA_LONG_DELAY_CHANCE = 0.18;  
-const EXTRA_LONG_DELAY_MS     = 35000; 
+// 🔧 CORREÇÃO CLAUDE & OTIMIZAÇÃO: Pausas mais curtas (2 a 6 min) são suficientes
+const MIN_BATCH_PAUSE_MS = 2 * 60 * 1000; // 2 minutos (Mínimo seguro)
+const MAX_BATCH_PAUSE_MS = 6 * 60 * 1000; // 6 minutos (Máximo suficiente)
+const MAX_ALLOWED_PAUSE_MS = 25 * 60 * 1000; // 🚨 LIMITE ABSOLUTO (Safety)
 
-const MIN_ACCOUNT_AGE_DAYS = 30; 
-const IGNORE_NO_AVATAR = true;   
+// 🚀 OTIMIZAÇÃO: "Pausa para café" menos frequente e mais curta
+const EXTRA_LONG_DELAY_CHANCE = 0.10; // 10% de chance (era 18%)
+const EXTRA_LONG_DELAY_MS = 20000;    // 20 segundos (era 35s)
+
+const MIN_ACCOUNT_AGE_DAYS = 30;
+const IGNORE_NO_AVATAR = true;
 
 const GUILD_COOLDOWN_MIN_HOURS = 6;
 const GUILD_COOLDOWN_MIN_MS = GUILD_COOLDOWN_MIN_HOURS * 3600000;
-const COOLDOWN_PENALTY_MS_PER_USER = 2000; 
+const COOLDOWN_PENALTY_MS_PER_USER = 2000;
 
-const SAVE_THRESHOLD = 5; 
-const MEMBER_CACHE_TTL = 5 * 60 * 1000; 
-const SOFT_BAN_THRESHOLD = 0.4; 
-const SOFT_BAN_MIN_SAMPLES = 10; 
+const SAVE_THRESHOLD = 5;
+const MEMBER_CACHE_TTL = 5 * 60 * 1000;
+const SOFT_BAN_THRESHOLD = 0.4;
+const SOFT_BAN_MIN_SAMPLES = 10;
+
+// 🔧 NOVO: Detector de congelamento (Watchdog)
+const INACTIVITY_THRESHOLD = 30 * 60 * 1000; // 30 minutos sem atividade = alerta
+let lastActivityTime = Date.now();
 
 // ============================================================================
 // 📧 SERVIÇO DE E-MAIL DE EMERGÊNCIA
 // ============================================================================
-
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-        user: process.env.EMAIL_USER, 
-        pass: process.env.EMAIL_PASS 
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
     }
 });
 
 async function sendBackupEmail(reason, state) {
     console.log(`📧 Iniciando backup por e-mail. Motivo: ${reason}`);
-    
+
     const guildId = state.currentAnnounceGuildId;
     let remainingUsers = [...state.queue];
-    
+
     if (guildId && state.guildData[guildId]) {
         const gd = state.guildData[guildId];
         const allPending = [
@@ -99,7 +129,7 @@ async function sendBackupEmail(reason, state) {
     }
 
     const backupData = {
-        source: "Bot_Stealth_System_V2_Hybrid",
+        source: "Bot_Stealth_System_V2_Hybrid_AntiFreeze",
         timestamp: Date.now(),
         reason: reason,
         text: state.text || (guildId ? state.guildData[guildId]?.lastRunText : ""),
@@ -129,7 +159,6 @@ async function sendBackupEmail(reason, state) {
 // ============================================================================
 // 💾 GERENCIADOR DE ESTADO (PERSISTÊNCIA)
 // ============================================================================
-
 class StateManager {
     constructor(filePath) {
         this.filePath = filePath;
@@ -151,9 +180,9 @@ class StateManager {
             progressMessageRef: null,
             quarantine: false,
             currentAnnounceGuildId: null,
-            privacyMode: "public", 
-            initiatorId: null, 
-            guildData: {} 
+            privacyMode: "public",
+            initiatorId: null,
+            guildData: {}
         };
     }
 
@@ -166,14 +195,14 @@ class StateManager {
 
             loaded.ignore = new Set(Array.isArray(loaded.ignore) ? loaded.ignore : []);
             loaded.only = new Set(Array.isArray(loaded.only) ? loaded.only : []);
-            
+
             if (!loaded.privacyMode) loaded.privacyMode = "public";
             if (!loaded.initiatorId) loaded.initiatorId = null;
 
             for (const guildId in loaded.guildData) {
                 const gd = loaded.guildData[guildId];
                 gd.processedMembers = Array.isArray(gd.processedMembers) ? gd.processedMembers : [];
-                gd.blockedDMs = Array.isArray(gd.blockedDMs) ? gd.blockedDMs : []; 
+                gd.blockedDMs = Array.isArray(gd.blockedDMs) ? gd.blockedDMs : [];
                 gd.failedQueue = Array.isArray(gd.failedQueue) ? gd.failedQueue : [];
                 gd.pendingQueue = Array.isArray(gd.pendingQueue) ? gd.pendingQueue : [];
                 gd.lastRunText = gd.lastRunText || "";
@@ -199,7 +228,7 @@ class StateManager {
                 serializable.guildData[id] = {
                     ...data,
                     processedMembers: [...data.processedMembers],
-                    blockedDMs: [...data.blockedDMs] 
+                    blockedDMs: [...data.blockedDMs]
                 };
             }
             fs.writeFileSync(this.filePath, JSON.stringify(serializable, null, 2));
@@ -237,7 +266,6 @@ const stateManager = new StateManager(STATE_FILE);
 // ============================================================================
 // 🤖 CLIENTE DISCORD & CACHE
 // ============================================================================
-
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -257,7 +285,47 @@ const memberCache = new Map();
 // 🛠️ UTILITÁRIOS & FERRAMENTAS
 // ============================================================================
 
-const wait = ms => new Promise(r => setTimeout(r, ms));
+// 🔧 NOVA FUNÇÃO WAIT COM HEARTBEAT (ANTI-FREEZE)
+const wait = async (ms) => {
+    lastActivityTime = Date.now(); // Atualiza timestamp de atividade
+
+    // Se a pausa for curta (menos de 2 min), usa o wait normal
+    if (ms < 120000) {
+        return new Promise(r => setTimeout(r, ms));
+    }
+
+    // Se for longa, quebra em pedaços de 1 minuto para manter o processo vivo
+    const minutes = ms / 60000;
+    const steps = Math.floor(minutes);
+    const remainder = ms % 60000;
+
+    const startTime = Date.now();
+    console.log(`💤 Iniciando espera segura de ${minutes.toFixed(1)} min (${new Date(startTime).toISOString()})`);
+
+    for (let i = 0; i < steps; i++) {
+        await new Promise(r => setTimeout(r, 60000)); // Espera 1 minuto
+        lastActivityTime = Date.now(); // Atualiza heartbeat
+
+        // Log a cada 3 minutos para não poluir
+        if ((i + 1) % 3 === 0) {
+            console.log(`⏳ ... ${i + 1}/${steps} min (${((Date.now() - startTime) / 60000).toFixed(1)}m reais)`);
+        }
+    }
+
+    if (remainder > 0) {
+        await new Promise(r => setTimeout(r, remainder));
+    }
+
+    const endTime = Date.now();
+    const realDuration = endTime - startTime;
+    console.log(`✅ Pausa concluída: ${(realDuration / 60000).toFixed(1)} min reais`);
+
+    // 🚨 ALERTA: Se pausou muito mais que o esperado
+    if (realDuration > ms * 1.3) { // 30% de margem
+        const diff = ((realDuration / ms) * 100).toFixed(0);
+        console.error(`🚨 ANOMALIA: Pausa foi ${diff}% maior que o planejado! Possível freeze detectado.`);
+    }
+};
 
 // 🛡️ FUNÇÃO DE SEGURANÇA PARA DADOS DA GUILDA
 function ensureGuildData(state, guildId) {
@@ -282,14 +350,14 @@ function randomizeParameters() {
     if (IS_LOCAL) {
         currentDelayBase = 2000 + Math.random() * 3000;
         currentBatchBase = 10 + Math.floor(Math.random() * 8);
-        console.log(`LOCAL → Delay ~${(currentDelayBase/1000).toFixed(1)}s | Lote ~${currentBatchBase}`);
+        console.log(`LOCAL → Delay ~${(currentDelayBase / 1000).toFixed(1)}s | Lote ~${currentBatchBase}`);
         return;
     }
 
-    currentDelayBase = 16000 + Math.floor(Math.random() * 12000);  
-    currentBatchBase = 14   + Math.floor(Math.random() * 9);       
+    currentDelayBase = 16000 + Math.floor(Math.random() * 12000);
+    currentBatchBase = 14 + Math.floor(Math.random() * 9);
 
-    console.log(`STEALTH AGRESSIVO → Delay ${(currentDelayBase/1000).toFixed(1)}–${((currentDelayBase + DELAY_RANDOM_MS)/1000).toFixed(1)}s | Lote ${currentBatchBase} ±${BATCH_VARIANCE}`);
+    console.log(`STEALTH AGRESSIVO → Delay ${(currentDelayBase / 1000).toFixed(1)}–${((currentDelayBase + DELAY_RANDOM_MS) / 1000).toFixed(1)}s | Lote ${currentBatchBase} ±${BATCH_VARIANCE}`);
 }
 
 function getNextBatchSize() {
@@ -328,7 +396,7 @@ function parseSelectors(text) {
 async function getCachedMembers(guild) {
     const cached = memberCache.get(guild.id);
     if (cached && Date.now() - cached.timestamp < MEMBER_CACHE_TTL) return cached.members;
-    try { await guild.members.fetch(); } catch (e) {}
+    try { await guild.members.fetch(); } catch (e) { }
     const members = guild.members.cache;
     memberCache.set(guild.id, { members, timestamp: Date.now() });
     return members;
@@ -366,18 +434,14 @@ async function readAttachmentJSON(url) {
 // ============================================================================
 
 async function getAiVariation(originalText, globalname) {
-    // 1. Substituição básica de variáveis (Nome) - Feito via Código, não IA, para 100% de precisão.
-    // Garante que se houver {name} ou {username}, eles são trocados AGORA.
+    // 1. Substituição básica de variáveis (Nome)
     let finalText = originalText.replace(/\{name\}|\{username\}|\{nome\}/gi, globalname);
 
-    // Se a IA não estiver disponível ou o texto for muito curto, retorna o texto limpo com nome
     if (!model || finalText.length < 10) return finalText;
 
     try {
-        // Sanitiza o nome para evitar injeção no prompt (medida de segurança)
         const safeGlobalName = globalname.replace(/["{}\\]/g, '');
-        
-        // 2. O prompt instrui a IA a ser um motor de sugestão estrito e evita palavras "perigosas".
+
         const prompt = `
         FUNÇÃO: Você é um motor de sugestão de sinônimos estrito.
         MISSÃO: Encontre UMA única palavra ou expressão curta (máximo 2 palavras) no texto abaixo que possa ser substituída por um sinônimo.
@@ -401,22 +465,18 @@ async function getAiVariation(originalText, globalname) {
         const result = await model.generateContent(prompt);
         const response = await result.response.text();
 
-        // 3. Processamento e execução da troca (feito via JavaScript para garantir formatação)
-        const jsonStr = response.replace(/```json|```/g, '').trim();
+        const jsonStr = response.replace(/```json/g, '').replace(/```/g, '').trim();
         const data = JSON.parse(jsonStr);
 
         if (data.alvo && data.substituto && finalText.includes(data.alvo)) {
-            // JavaScript executa a troca. A estrutura visual do finalText não é afetada.
             return finalText.replace(data.alvo, data.substituto);
         }
-        
-        // Se a IA falhar na sugestão (JSON inválido, palavra não encontrada), retorna o texto original.
+
         return finalText;
 
     } catch (error) {
         console.warn(`⚠️ Erro na V5 Cirúrgica. Usando fallback seguro: ${error.message}`);
-        // Em caso de falha, retorna o texto intacto.
-        return finalText; 
+        return finalText;
     }
 }
 
@@ -425,6 +485,8 @@ async function getAiVariation(originalText, globalname) {
 // ============================================================================
 
 async function sendStealthDM(user, rawText, attachments) {
+    lastActivityTime = Date.now(); // 🔧 Atualiza heartbeat
+
     let dmChannel;
     try {
         if (user.dmChannel) dmChannel = user.dmChannel;
@@ -441,7 +503,7 @@ async function sendStealthDM(user, rawText, attachments) {
         const shouldType = Math.random() > 0.25;
         if (shouldType && finalContent) {
             await dmChannel.sendTyping();
-            const typeTime = calculateTypingTime(finalContent); 
+            const typeTime = calculateTypingTime(finalContent);
             await wait(typeTime);
         } else {
             await wait(Math.floor(Math.random() * 2000) + 1000);
@@ -464,23 +526,35 @@ async function sendStealthDM(user, rawText, attachments) {
             const code = err.code || 0;
 
             if (code === 40003 || errMsg.includes("spam") || errMsg.includes("quarantine")) {
-                 console.error("🚨 ALERTA CRÍTICO: SPAM FLAG (40003)");
-                 await stateManager.modify(s => s.quarantine = true);
-                 return { success: false, reason: "quarantine" };
+                console.error("🚨 ALERTA CRÍTICO: SPAM FLAG (40003)");
+                await stateManager.modify(s => s.quarantine = true);
+                return { success: false, reason: "quarantine" };
             }
-            
+
             if (code === 50007 || code === 50001) {
                 return { success: false, reason: "closed" };
             }
 
             if (err.retry_after || code === 20016) {
                 const waitTime = (err.retry_after ? err.retry_after * 1000 : 60000) + 5000;
-                console.warn(`⏳ Rate Limit. Esperando ${waitTime/1000}s.`);
+
+                // 🚨 PROTEÇÃO: Rate limit extremo = aborta
+                if (waitTime > 3600000) { // > 1 hora
+                    console.error(`🚨 Rate Limit Extremo: ${(waitTime / 60000).toFixed(0)}min. Abortando.`);
+                    await stateManager.modify(s => {
+                        s.active = false;
+                        s.quarantine = true;
+                    });
+                    await sendBackupEmail(`Rate Limit Extremo (${(waitTime / 60000).toFixed(0)}min)`, stateManager.state);
+                    return { success: false, reason: "quarantine" };
+                }
+
+                console.warn(`⏳ Rate Limit. Esperando ${waitTime / 1000}s.`);
                 currentDelayBase += 5000;
                 await wait(waitTime);
                 continue;
             }
-            
+
             const backoff = 5000 * attempt;
             console.error(`❌ Erro envio (${attempt}): ${errMsg}. Esperando ${backoff}ms.`);
             if (attempt < RETRY_LIMIT) await wait(backoff);
@@ -497,12 +571,12 @@ async function workerLoop() {
     console.log("🚀 Worker Iniciado");
     const state = stateManager.state;
     const guildId = state.currentAnnounceGuildId;
-    
+
     if (!guildId || !state.guildData[guildId]) {
         console.error("⚠️ Worker iniciou sem guilda válida.");
         return;
     }
-    
+
     const gd = state.guildData[guildId];
 
     try {
@@ -510,29 +584,34 @@ async function workerLoop() {
         let currentBatchSize = getNextBatchSize();
 
         while (state.active && state.queue.length > 0) {
-            
-            if (sentInBatch >= currentBatchSize) {
-                const pauseRange = MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS;
-                const pauseDuration = IS_LOCAL 
-                    ? 3000 
-                    : MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * (MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS));
+            lastActivityTime = Date.now(); // 🔧 Heartbeat principal
 
-                console.log(`Lote concluído. Pausa de ${(pauseDuration/60000).toFixed(1)} minutos.`);
-                
+            if (sentInBatch >= currentBatchSize) {
+                // 🔧 CORREÇÃO: Calcula pausa com limite máximo e mínimo seguros
+                const pauseRange = MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS;
+                let pauseDuration = IS_LOCAL
+                    ? 3000
+                    : MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * pauseRange);
+
+                // 🚨 LIMITE ABSOLUTO
+                pauseDuration = Math.min(pauseDuration, MAX_ALLOWED_PAUSE_MS);
+
+                console.log(`🔄 Lote concluído (${sentInBatch} enviados). Pausa de ${(pauseDuration / 60000).toFixed(1)} min.`);
+
                 stateManager.forceSave();
                 await updateProgressEmbed();
-                
-                await wait(pauseDuration);
+
+                await wait(pauseDuration); // Usa o wait inteligente
                 randomizeParameters();
-                
+
                 if (!stateManager.state.active || stateManager.state.queue.length === 0) break;
-                
+
                 sentInBatch = 0;
                 currentBatchSize = getNextBatchSize();
             }
 
             const userId = state.queue.shift();
-            await stateManager.modify(() => {}); 
+            await stateManager.modify(() => { });
 
             if (gd.blockedDMs && gd.blockedDMs.includes(userId)) {
                 console.log(`⏭️ Bloqueado: ${userId}`);
@@ -541,17 +620,17 @@ async function workerLoop() {
 
             let user = client.users.cache.get(userId);
             if (!user) {
-                try { user = await client.users.fetch(userId); } 
+                try { user = await client.users.fetch(userId); }
                 catch (e) {
                     console.log(`⏭️ Inacessível: ${userId}`);
                     await stateManager.modify(s => {
-                          ensureGuildData(s, guildId);
-                          if (!s.guildData[guildId].processedMembers.includes(userId)) s.guildData[guildId].processedMembers.push(userId);
+                        ensureGuildData(s, guildId);
+                        if (!s.guildData[guildId].processedMembers.includes(userId)) s.guildData[guildId].processedMembers.push(userId);
                     });
                     continue;
                 }
             }
-            
+
             if (user.bot || isSuspiciousAccount(user)) {
                 console.log(`🚫 Ignorado (Bot/Suspeito): ${user.tag}`);
                 continue;
@@ -561,7 +640,7 @@ async function workerLoop() {
 
             await stateManager.modify(s => {
                 const gData = ensureGuildData(s, guildId);
-                
+
                 if (result.success) {
                     s.currentRunStats.success++;
                     const idx = gData.failedQueue.indexOf(userId);
@@ -595,15 +674,15 @@ async function workerLoop() {
                 break;
             }
 
-            updateProgressEmbed().catch(() => {});
-            
+            updateProgressEmbed().catch(() => { });
+
             if (result.success) {
                 let d = currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS);
 
                 if (Math.random() < EXTRA_LONG_DELAY_CHANCE) {
                     const extra = IS_LOCAL ? 5000 : EXTRA_LONG_DELAY_MS + Math.floor(Math.random() * 25000);
                     d += extra;
-                    console.log(`Pensando na vida... +${(extra/1000).toFixed(0)}s extra`);
+                    console.log(`💭 Pensando na vida... +${(extra / 1000).toFixed(0)}s extra`);
                 }
 
                 await wait(d);
@@ -645,7 +724,7 @@ async function finalizeSending() {
     const state = stateManager.state;
     stopProgressUpdater();
     const guildId = state.currentAnnounceGuildId;
-    
+
     await stateManager.modify(s => {
         if (guildId) {
             const gData = ensureGuildData(s, guildId);
@@ -659,7 +738,7 @@ async function finalizeSending() {
     const stats = state.currentRunStats;
     const remaining = (state.guildData[guildId]?.pendingQueue.length || 0);
     const embedColor = remaining === 0 && !state.quarantine ? 0x00FF00 : 0xFF0000;
-    
+
     const embed = new EmbedBuilder()
         .setTitle("📬 Relatório Final")
         .setColor(embedColor)
@@ -684,27 +763,27 @@ async function finalizeSending() {
         try {
             const ch = await client.channels.fetch(state.progressMessageRef.channelId);
             const msg = await ch.messages.fetch(state.progressMessageRef.messageId);
-            
+
             // Edita a mensagem onde ela estiver (DM ou Canal)
             await msg.edit({ content: finalText, embeds: [embed] }).catch(async (err) => {
-                 // Fallback se falhar editar
-                 if (state.privacyMode === 'public') {
-                     console.warn("⚠️ Falha ao editar msg final. Enviando nova (PÚBLICA)...", err.message);
-                     await ch.send({ content: finalText, embeds: [embed] });
-                 } else {
-                     console.warn("🔒 Falha ao editar msg final na DM. Enviando nova...");
-                     if (state.initiatorId) {
-                         try {
-                             const user = await client.users.fetch(state.initiatorId);
-                             await user.send({ 
-                                 content: `⚠️ **Relatório Final (Fallback)**\n${finalText}`, 
-                                 embeds: [embed] 
-                             });
-                         } catch (dmErr) {
-                             console.error("❌ Falha crítica: Não foi possível enviar o relatório na DM.", dmErr.message);
-                         }
-                     }
-                 }
+                // Fallback se falhar editar
+                if (state.privacyMode === 'public') {
+                    console.warn("⚠️ Falha ao editar msg final. Enviando nova (PÚBLICA)...", err.message);
+                    await ch.send({ content: finalText, embeds: [embed] });
+                } else {
+                    console.warn("🔒 Falha ao editar msg final na DM. Enviando nova...");
+                    if (state.initiatorId) {
+                        try {
+                            const user = await client.users.fetch(state.initiatorId);
+                            await user.send({
+                                content: `⚠️ **Relatório Final (Fallback)**\n${finalText}`,
+                                embeds: [embed]
+                            });
+                        } catch (dmErr) {
+                            console.error("❌ Falha crítica: Não foi possível enviar o relatório na DM.", dmErr.message);
+                        }
+                    }
+                }
             });
         } catch (e) {
             console.error("❌ Erro ao finalizar envio:", e.message);
@@ -726,7 +805,7 @@ async function updateProgressEmbed() {
             .setColor("#00AEEF")
             .setDescription(`Fila: ${state.queue.length} | Sucesso: ${state.currentRunStats.success} | Fechadas: ${state.currentRunStats.closed}`);
         await msg.edit({ embeds: [embed] });
-    } catch (e) {}
+    } catch (e) { }
 }
 
 function startProgressUpdater() {
@@ -746,8 +825,29 @@ function calculateCooldownInfo(guildData) {
     const requiredCooldown = Math.max(GUILD_COOLDOWN_MIN_MS, lastSize * COOLDOWN_PENALTY_MS_PER_USER);
     const elapsed = now - guildData.lastAnnounceTime;
     if (elapsed >= requiredCooldown) return "✅ Disponível";
-    return `⏳ ${(requiredCooldown - elapsed)/60000}m restantes`;
+    return `⏳ ${(requiredCooldown - elapsed) / 60000}m restantes`;
 }
+
+// ============================================================================
+// 🔔 MONITOR DE CONGELAMENTO (WATCHDOG)
+// ============================================================================
+setInterval(() => {
+    const inactiveTime = Date.now() - lastActivityTime;
+
+    if (inactiveTime > INACTIVITY_THRESHOLD) {
+        console.error(`🚨 ALERTA: Processo inativo por ${(inactiveTime / 60000).toFixed(1)} minutos!`);
+        console.error("Possível congelamento detectado. Forçando salvamento...");
+        stateManager.forceSave();
+
+        if (stateManager.state.active) {
+            sendBackupEmail("Inatividade Suspeita (Possível Freeze)", stateManager.state)
+                .then(() => {
+                    console.error("🔄 Reiniciando processo para recuperação...");
+                    process.exit(1); // Railway vai reiniciar automaticamente
+                });
+        }
+    }
+}, 60000); // Checa a cada 1 minuto
 
 // ============================================================================
 // 🎮 LÓGICA CENTRAL DOS COMANDOS
@@ -755,8 +855,8 @@ function calculateCooldownInfo(guildData) {
 
 async function unifiedReply(ctx, content, embeds = []) {
     const payload = { content, embeds };
-    if (ctx.isChatInputCommand?.()) { 
-        payload.ephemeral = true; 
+    if (ctx.isChatInputCommand?.()) {
+        payload.ephemeral = true;
         if (ctx.deferred || ctx.replied) return ctx.editReply(payload);
         return ctx.reply(payload);
     }
@@ -767,8 +867,8 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     const guildId = ctx.guild.id;
     const state = stateManager.state;
     const isSlash = ctx.isChatInputCommand?.();
-    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; 
-    
+    const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
+
     const gd = ensureGuildData(state, guildId);
 
     if (state.active) return unifiedReply(ctx, "❌ Já existe um envio ativo.");
@@ -776,7 +876,7 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     // 1. Processa filtros
     const parsed = parseSelectors(filtersStr || "");
     let rawInputText = text || "";
-    
+
     // Texto base limpo dos IDs
     let messageText = parsed.cleaned || rawInputText.replace(/([+-])\{(\d{5,30})\}/g, "").trim();
 
@@ -785,17 +885,15 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     // ==================================================================
     if (isSlash && messageText) {
         // 1. TRANSFORMA MÚLTIPLOS ESPAÇOS EM QUEBRA DE PARÁGRAFO (\n\n)
-        // Isso força a linha em branco que foi perdida pelo Discord.
         messageText = messageText.replace(/ {2,}/g, '\n\n');
 
-        // 2. RECUPERA OS BULLET POINTS - IGNORA O HÍFEN (-)
+        // 2. RECUPERA OS BULLET POINTS
         messageText = messageText.replace(/ ([*•+]) /g, '\n$1 ');
 
         // 3. RECUPERA TÍTULOS (Markdown Headers)
         messageText = messageText.replace(/ (#+) /g, '\n\n$1 ');
 
-        // 4. Correção fina: Remove espaços sobrando no início das linhas novas
-        // Isso pode ser necessário após a reconstrução de bullets.
+        // 4. Correção fina
         messageText = messageText.replace(/\n /g, '\n');
     }
     // ==================================================================
@@ -841,16 +939,16 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.active = true;
         s.quarantine = false;
         s.currentAnnounceGuildId = guildId;
-        s.text = messageText; // Usa o texto reconstruído
+        s.text = messageText;
         s.attachments = attachments;
         s.queue = queue;
         s.currentRunStats = { success: 0, fail: 0, closed: 0 };
         s.ignore = parsed.ignore;
         s.only = parsed.only;
-        
+
         s.privacyMode = isSlash ? 'private' : 'public';
-        s.initiatorId = initiatorId; 
-        
+        s.initiatorId = initiatorId;
+
         const gData = ensureGuildData(s, guildId);
         gData.lastRunText = messageText;
         gData.lastRunAttachments = attachments;
@@ -858,18 +956,18 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     });
 
     const msgContent = `🚀 Iniciando envio Stealth para **${queue.length}** membros...`;
-    
+
     let progressMsg;
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
-        
+
         try {
             const dmChannel = await ctx.user.createDM();
             const initialEmbed = new EmbedBuilder()
                 .setTitle("📨 Enviando...")
                 .setColor("#00AEEF")
                 .setDescription(`Fila: ${queue.length} | Sucesso: 0 | Fechadas: 0`);
-            
+
             progressMsg = await dmChannel.send({ content: msgContent, embeds: [initialEmbed] });
             await ctx.editReply({ content: "✅ Painel de controle enviado para sua DM! Acompanhe por lá." });
         } catch (e) {
@@ -885,7 +983,7 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     await stateManager.modify(s => {
         s.progressMessageRef = { channelId: progressMsg.channel.id, messageId: progressMsg.id };
     });
-    
+
     startProgressUpdater();
     startWorker();
 }
@@ -896,7 +994,7 @@ async function execResume(ctx, attachmentUrl) {
     let stateToLoad = null;
     let resumeSource = "local";
     const isSlash = ctx.isChatInputCommand?.();
-    const initiatorId = isSlash ? ctx.user.id : ctx.author.id; 
+    const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
 
     if (attachmentUrl) {
         const jsonResult = await readAttachmentJSON(attachmentUrl);
@@ -914,10 +1012,10 @@ async function execResume(ctx, attachmentUrl) {
 
     const s = stateManager.state;
     const gd = ensureGuildData(s, ctx.guild.id);
-    
+
     const allIds = [...new Set([
-        ...s.queue, 
-        ...gd.pendingQueue, 
+        ...s.queue,
+        ...gd.pendingQueue,
         ...gd.failedQueue
     ])].filter(id => !gd.blockedDMs.includes(id));
 
@@ -938,9 +1036,9 @@ async function execResume(ctx, attachmentUrl) {
         st.text = textToSend;
         st.attachments = attachToSend || [];
         st.currentRunStats = { success: 0, fail: 0, closed: 0 };
-        
+
         st.privacyMode = isSlash ? 'private' : 'public';
-        st.initiatorId = initiatorId; 
+        st.initiatorId = initiatorId;
 
         const g = ensureGuildData(st, ctx.guild.id);
         g.pendingQueue = [];
@@ -949,18 +1047,17 @@ async function execResume(ctx, attachmentUrl) {
 
     const msgContent = `🔄 Retomando envio (${resumeSource}) para **${allIds.length}** membros...`;
     let progressMsg;
-    
+
     if (ctx.isChatInputCommand?.()) {
-        // 🚨 LÓGICA MODIFICADA: SE SLASH, ENVIA PAINEL NA DM
         await ctx.deferReply({ ephemeral: true });
-        
+
         try {
             const dmChannel = await ctx.user.createDM();
             const dmEmbed = new EmbedBuilder()
                 .setTitle("📨 Retomando...")
                 .setColor("#00AEEF")
                 .setDescription(`Fila: ${allIds.length} | Sucesso: 0`);
-            
+
             progressMsg = await dmChannel.send({ content: msgContent, embeds: [dmEmbed] });
             await ctx.editReply({ content: "✅ Painel de retomada enviado para sua DM!" });
         } catch (e) {
@@ -984,7 +1081,7 @@ async function execStop(ctx) {
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
     }
-    
+
     await stateManager.modify(s => s.active = false);
     await sendBackupEmail("Stop Manual", stateManager.state);
     unifiedReply(ctx, "🛑 Parado (Backup enviado).");
@@ -994,12 +1091,12 @@ async function execStatus(ctx) {
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
     }
-    
+
     const state = stateManager.state;
     const gd = ensureGuildData(state, ctx.guild.id);
-    
+
     const isActive = state.active && state.currentAnnounceGuildId === ctx.guild.id;
-    
+
     const embed = new EmbedBuilder()
         .setTitle("📊 Status Stealth")
         .setColor(isActive ? 0x00FF00 : 0x808080)
@@ -1009,7 +1106,7 @@ async function execStatus(ctx) {
             { name: "Fila Atual", value: `${state.queue.length}`, inline: true },
             { name: "🚫 DMs Fechadas", value: `${gd.blockedDMs.length}`, inline: true }
         );
-        
+
     unifiedReply(ctx, "", [embed]);
 }
 
@@ -1042,8 +1139,8 @@ async function registerSlashCommands() {
         console.log('Registrando Slash Commands...');
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log('✅ Slash Commands Registrados!');
-    } catch (e) { 
-        console.error("❌ Erro ao registrar Slash Commands:", e); 
+    } catch (e) {
+        console.error("❌ Erro ao registrar Slash Commands:", e);
         console.log("⚠️ Se estiver em DEV, pode demorar até 1 hora para sincronizar.");
     }
 }
@@ -1076,7 +1173,7 @@ client.on('interactionCreate', async interaction => {
         if (!interaction.replied && !interaction.deferred) {
             await interaction.reply({ content: `❌ Erro interno ao executar /${commandName}.`, ephemeral: true });
         } else {
-             await interaction.editReply({ content: `❌ Erro interno ao executar /${commandName}.` });
+            await interaction.editReply({ content: `❌ Erro interno ao executar /${commandName}.` });
         }
     }
 });
@@ -1109,6 +1206,8 @@ client.on("messageCreate", async (message) => {
 // INICIALIZAÇÃO
 client.on("ready", async () => {
     console.log(`✅ Bot online como: ${client.user.tag}`);
+    console.log(`🛡️ Anti-Freeze System: ATIVO`);
+    console.log(`⏱️ Watchdog Timeout: ${INACTIVITY_THRESHOLD / 60000} minutos`);
     await registerSlashCommands();
     if (stateManager.state.active) startWorker();
 });
