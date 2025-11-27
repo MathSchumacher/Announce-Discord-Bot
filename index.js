@@ -429,9 +429,13 @@ function detectSoftBan(stats) {
 }
 
 async function readAttachmentJSON(url) {
-    if (!url || (!url.endsWith('.json') && !url.endsWith('.txt'))) {
-        return { success: false, error: "❌ URL inválida ou não é JSON" };
+    // 🔧 CORREÇÃO: Removemos a validação estrita de extensão (.json/.txt)
+    // As URLs de anexo do Discord possuem parâmetros (?ex=...) que faziam a validação antiga falhar.
+    // Agora confiamos que, se tem URL, tentamos baixar e o JSON.parse validará o conteúdo.
+    if (!url) {
+        return { success: false, error: "❌ Nenhuma URL de arquivo encontrada." };
     }
+
     return new Promise(resolve => {
         https.get(url, (res) => {
             let data = '';
@@ -441,10 +445,10 @@ async function readAttachmentJSON(url) {
                     const parsed = JSON.parse(data);
                     resolve({ success: true, state: parsed });
                 } catch (e) {
-                    resolve({ success: false, error: "❌ JSON Corrompido." });
+                    resolve({ success: false, error: "❌ O arquivo não é um JSON válido ou está corrompido." });
                 }
             });
-        }).on('error', (err) => resolve({ success: false, error: err.message }));
+        }).on('error', (err) => resolve({ success: false, error: `Erro de download: ${err.message}` }));
     });
 }
 
