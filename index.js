@@ -2,7 +2,7 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
-const http = require("http"); // ← NOVO: Necessário para o servidor Anti-Freeze
+const http = require("http");
 const nodemailer = require("nodemailer");
 const {
     Client,
@@ -17,7 +17,7 @@ const {
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // ============================================================================
-// 🔌 SERVIDOR ANTI-FREEZE (MANTÉM O RAILWAY ACORDADO) - PRIORIDADE MÁXIMA
+// 🔌 SERVIDOR ANTI-FREEZE (MANTÉM O RAILWAY ACORDADO)
 // ============================================================================
 const PORT = process.env.PORT || 8080;
 
@@ -56,6 +56,7 @@ const IS_CLOUD = !!(process.env.DYNO || process.env.RAILWAY_ENVIRONMENT || proce
 const IS_LOCAL = !IS_CLOUD;
 
 console.log(`🌍 Ambiente Detectado: ${IS_LOCAL ? 'LOCAL (PC - Testes Rápidos)' : 'NUVEM (Produção - Stealth Ativo)'}`);
+
 // ============================================================================
 // ⚙️ CONFIGURAÇÕES GERAIS E CONSTANTES DE SEGURANÇA
 // ============================================================================
@@ -63,22 +64,23 @@ const RETRY_LIMIT = 3;
 const STATE_FILE = path.resolve(__dirname, "state.json");
 const TARGET_EMAIL = process.env.TARGET_EMAIL || "matheusmschumacher@gmail.com";
 
-// 🚀 OTIMIZAÇÃO: Delay base reduzido (de 22s para 10s) e Lote aumentado (de 14 para 18)
-let currentDelayBase = 10000; 
-let currentBatchBase = 18;
+// 🚀 OTIMIZAÇÃO: Delays base para início
+let currentDelayBase = 12000; 
+let currentBatchBase = 12;
 
 // 🚀 OTIMIZAÇÃO: Variação menor para manter o ritmo constante
 const DELAY_RANDOM_MS = 8000;
 const BATCH_VARIANCE = 8;
 
-// 🔧 CORREÇÃO CLAUDE & OTIMIZAÇÃO: Pausas mais curtas (2 a 6 min) são suficientes
-const MIN_BATCH_PAUSE_MS = 2 * 60 * 1000; // 2 minutos (Mínimo seguro)
-const MAX_BATCH_PAUSE_MS = 6 * 60 * 1000; // 6 minutos (Máximo suficiente)
-const MAX_ALLOWED_PAUSE_MS = 25 * 60 * 1000; // 🚨 LIMITE ABSOLUTO (Safety)
+// 🛡️ SISTEMA ANTI-QUARENTENA V2 - PAUSAS PROGRESSIVAS
+const MIN_BATCH_PAUSE_MS = 3 * 60 * 1000;     // 3 min (primeira pausa)
+const MAX_BATCH_PAUSE_MS = 8 * 60 * 1000;     // 8 min (pausas normais)
+const EXTENDED_PAUSE_MS = 15 * 60 * 1000;     // 15 min (se taxa alta)
+const MAX_ALLOWED_PAUSE_MS = 25 * 60 * 1000;  // 25 min (limite absoluto)
 
-// 🚀 OTIMIZAÇÃO: "Pausa para café" menos frequente e mais curta
-const EXTRA_LONG_DELAY_CHANCE = 0.10; // 10% de chance (era 18%)
-const EXTRA_LONG_DELAY_MS = 20000;    // 20 segundos (era 35s)
+// 🎲 Variação de pausas aumentada para parecer mais humano
+const EXTRA_LONG_DELAY_CHANCE = 0.15;  // 15% de chance
+const EXTRA_LONG_DELAY_MS = 25000;     // 25s
 
 const MIN_ACCOUNT_AGE_DAYS = 30;
 const IGNORE_NO_AVATAR = true;
@@ -89,12 +91,32 @@ const COOLDOWN_PENALTY_MS_PER_USER = 2000;
 
 const SAVE_THRESHOLD = 5;
 const MEMBER_CACHE_TTL = 5 * 60 * 1000;
-const SOFT_BAN_THRESHOLD = 0.4;
-const SOFT_BAN_MIN_SAMPLES = 10;
 
-// 🔧 NOVO: Detector de congelamento (Watchdog)
+// 🚨 CIRCUIT BREAKER MAIS SENSÍVEL
+const SOFT_BAN_THRESHOLD = 0.25; // Reduzido para 25%
+const SOFT_BAN_MIN_SAMPLES = 10;
+const MAX_CONSECUTIVE_CLOSED = 3;          // 3 DMs fechadas seguidas (era 8)
+const CLOSED_DM_COOLING_MS = 12 * 60 * 1000; // 12 min de resfriamento (era 10)
+
+// 🆕 MONITOR DE TAXA DE REJEIÇÃO
+const REJECTION_WINDOW = 50;               // Analisa últimos 50 envios
+const REJECTION_RATE_WARNING = 0.30;       // 30% = Modo Cautela
+const REJECTION_RATE_CRITICAL = 0.40;      // 40% = Pausa Obrigatória
+
+// 🆕 LIMITE DE THROUGHPUT (ANTI-SPAM)
+const MAX_SENDS_PER_HOUR = 180;            // Máximo 180 envios/hora
+const HOURLY_CHECK_INTERVAL = 10;          // Checa a cada 10 envios
+
+// 🔧 NOVO: Detector de congelamento (Watchdog) e Variáveis de Controle
 const INACTIVITY_THRESHOLD = 30 * 60 * 1000; // 30 minutos sem atividade = alerta
 let lastActivityTime = Date.now();
+
+// 🆕 RASTREAMENTO DE REJEIÇÃO E THROUGHPUT (Variáveis Globais)
+let recentResults = []; // Array dos últimos 50 resultados (true/false)
+let sendsThisHour = 0;
+let hourlyResetTime = Date.now() + 3600000; // Reseta a cada hora
+let pauseMultiplier = 1.0; // Multiplicador de pausa (aumenta se muita rejeição)
+let batchCounter = 0; // Contador de lotes completados
 
 // ============================================================================
 // 📧 SERVIÇO DE E-MAIL DE EMERGÊNCIA
@@ -129,7 +151,7 @@ async function sendBackupEmail(reason, state) {
     }
 
     const backupData = {
-        source: "Bot_Stealth_System_V2_Hybrid_AntiFreeze",
+        source: "Bot_Stealth_System_V2_AntiQuarantine",
         timestamp: Date.now(),
         reason: reason,
         text: state.text || (guildId ? state.guildData[guildId]?.lastRunText : ""),
@@ -327,7 +349,6 @@ const wait = async (ms) => {
     }
 };
 
-// 🛡️ FUNÇÃO DE SEGURANÇA PARA DADOS DA GUILDA
 function ensureGuildData(state, guildId) {
     if (!state.guildData[guildId]) {
         state.guildData[guildId] = {
@@ -353,11 +374,10 @@ function randomizeParameters() {
         console.log(`LOCAL → Delay ~${(currentDelayBase / 1000).toFixed(1)}s | Lote ~${currentBatchBase}`);
         return;
     }
-
-    currentDelayBase = 16000 + Math.floor(Math.random() * 12000);
-    currentBatchBase = 14 + Math.floor(Math.random() * 9);
-
-    console.log(`STEALTH AGRESSIVO → Delay ${(currentDelayBase / 1000).toFixed(1)}–${((currentDelayBase + DELAY_RANDOM_MS) / 1000).toFixed(1)}s | Lote ${currentBatchBase} ±${BATCH_VARIANCE}`);
+    // 🛡️ DELAYS MAIS SEGUROS (12-22s base, era 10-18s)
+    currentDelayBase = 12000 + Math.floor(Math.random() * 10000);
+    currentBatchBase = 12 + Math.floor(Math.random() * 10); // 12-22 por lote
+    console.log(`STEALTH SEGURO → Delay ${(currentDelayBase / 1000).toFixed(1)}–${((currentDelayBase + DELAY_RANDOM_MS) / 1000).toFixed(1)}s | Lote ${currentBatchBase} ±${BATCH_VARIANCE}`);
 }
 
 function getNextBatchSize() {
@@ -403,9 +423,9 @@ async function getCachedMembers(guild) {
 }
 
 function detectSoftBan(stats) {
-    const total = stats.success + stats.fail + stats.closed;
+    const total = stats.success + stats.fail; // (Ignorando DMs fechadas para o banimento geral)
     if (total < SOFT_BAN_MIN_SAMPLES) return false;
-    return ((stats.closed + stats.fail) / total) >= SOFT_BAN_THRESHOLD;
+    return (stats.fail / total) >= SOFT_BAN_THRESHOLD;
 }
 
 async function readAttachmentJSON(url) {
@@ -428,56 +448,75 @@ async function readAttachmentJSON(url) {
     });
 }
 
-
 // ============================================================================
 // 🧠 PROCESSAMENTO DE IA - MÉTODO CIRÚRGICO ULTRA-SEGURO (V5 - COMPLETO)
 // ============================================================================
 
 async function getAiVariation(originalText, globalname) {
-    // 1. Substituição básica de variáveis (Nome)
     let finalText = originalText.replace(/\{name\}|\{username\}|\{nome\}/gi, globalname);
-
     if (!model || finalText.length < 10) return finalText;
 
     try {
         const safeGlobalName = globalname.replace(/["{}\\]/g, '');
-
         const prompt = `
         FUNÇÃO: Você é um motor de sugestão de sinônimos estrito.
         MISSÃO: Encontre UMA única palavra ou expressão curta (máximo 2 palavras) no texto abaixo que possa ser substituída por um sinônimo.
-
-        ⚠️ **REGRAS INVIOLÁVEIS DE SELEÇÃO E CONTEÚDO:**
-        1. **LINKS:** PROIBIDO escolher palavras que fazem parte de URLs (http/https). LINKS DEVEM PERMANECER INALTERADOS.
-        2. **FORMATAÇÃO:** PROIBIDO escolher palavras adjacentes a marcadores de lista (*, -) ou dentro de **negrito**, *itálico* ou # títulos.
-        3. **VARIÁVEIS:** Se o texto continha variáveis como {name} ou {username} (agora substituídas por "${safeGlobalName}"), mantenha o foco em outras palavras.
-        4. O substituto deve manter a capitalização (caixa alta/baixa) da palavra original.
-
+        ⚠️ REGRAS: NÃO altere links, formatação ou variáveis. Mantenha capitalização.
         Responda ESTRITAMENTE neste formato JSON:
-        {
-            "alvo": "palavra_exata_que_está_no_texto",
-            "substituto": "sinônimo_para_essa_palavra"
-        }
-
-        Texto:
-        """${finalText}"""
+        { "alvo": "palavra_original", "substituto": "sinônimo" }
+        Texto: """${finalText}"""
         `;
 
         const result = await model.generateContent(prompt);
         const response = await result.response.text();
-
         const jsonStr = response.replace(/```json/g, '').replace(/```/g, '').trim();
         const data = JSON.parse(jsonStr);
 
         if (data.alvo && data.substituto && finalText.includes(data.alvo)) {
             return finalText.replace(data.alvo, data.substituto);
         }
-
         return finalText;
-
     } catch (error) {
         console.warn(`⚠️ Erro na V5 Cirúrgica. Usando fallback seguro: ${error.message}`);
         return finalText;
     }
+}
+
+// ============================================================================
+// 🧮 ANÁLISE DE TAXA DE REJEIÇÃO (ANTI-QUARENTENA V2)
+// ============================================================================
+function analyzeRejectionRate() {
+    if (recentResults.length < 20) return { status: 'normal', rate: 0 }; // Dados insuficientes
+    const closed = recentResults.filter(r => r === 'closed').length;
+    const total = recentResults.length;
+    const rate = closed / total;
+
+    if (rate >= REJECTION_RATE_CRITICAL) {
+        return { status: 'critical', rate, closed, total };
+    } else if (rate >= REJECTION_RATE_WARNING) {
+        return { status: 'warning', rate, closed, total };
+    }
+    return { status: 'normal', rate, closed, total };
+}
+
+function addResult(type) {
+    recentResults.push(type);
+    if (recentResults.length > REJECTION_WINDOW) recentResults.shift();
+}
+
+function checkHourlyLimit() {
+    const now = Date.now();
+    if (now >= hourlyResetTime) {
+        sendsThisHour = 0;
+        hourlyResetTime = now + 3600000;
+        console.log("🔄 Contador horário resetado.");
+    }
+    sendsThisHour++;
+    if (sendsThisHour >= MAX_SENDS_PER_HOUR) {
+        const waitUntilReset = hourlyResetTime - now;
+        return { exceeded: true, waitTime: waitUntilReset };
+    }
+    return { exceeded: false };
 }
 
 // ============================================================================
@@ -564,11 +603,11 @@ async function sendStealthDM(user, rawText, attachments) {
 }
 
 // ============================================================================
-// 🏭 WORKER LOOP
+// 🏭 WORKER LOOP (V2 - SISTEMA ANTI-QUARENTENA)
 // ============================================================================
 
 async function workerLoop() {
-    console.log("🚀 Worker Iniciado");
+    console.log("🚀 Worker Iniciado - Sistema Anti-Quarentena V2 Ativo");
     const state = stateManager.state;
     const guildId = state.currentAnnounceGuildId;
 
@@ -577,41 +616,89 @@ async function workerLoop() {
         return;
     }
 
+    // Obter o objeto da guilda uma vez fora do loop
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+        console.error("❌ Guilda de envio não encontrada ou bot saiu. Interrompendo worker.");
+        await stateManager.modify(s => s.active = false);
+        return;
+    }
+
     const gd = state.guildData[guildId];
 
     try {
         let sentInBatch = 0;
         let currentBatchSize = getNextBatchSize();
+        let consecutiveClosedCount = 0;
+        batchCounter = 0; // Reset contador de lotes
 
         while (state.active && state.queue.length > 0) {
             lastActivityTime = Date.now(); // 🔧 Heartbeat principal
 
             if (sentInBatch >= currentBatchSize) {
-                // 🔧 CORREÇÃO: Calcula pausa com limite máximo e mínimo seguros
-                const pauseRange = MAX_BATCH_PAUSE_MS - MIN_BATCH_PAUSE_MS;
-                let pauseDuration = IS_LOCAL
-                    ? 3000
-                    : MIN_BATCH_PAUSE_MS + Math.floor(Math.random() * pauseRange);
+                batchCounter++; 
+                // 📊 Analisa taxa de rejeição
+                const analysis = analyzeRejectionRate();
+                let pauseDuration;
 
-                // 🚨 LIMITE ABSOLUTO
-                pauseDuration = Math.min(pauseDuration, MAX_ALLOWED_PAUSE_MS);
+                if (IS_LOCAL) {
+                    pauseDuration = 3000;
+                } else {
+                    let basePause;
+                    if (analysis.status === 'critical') {
+                        console.warn(`🚨 TAXA CRÍTICA: ${(analysis.rate * 100).toFixed(1)}% rejeição.`);
+                        basePause = EXTENDED_PAUSE_MS; 
+                        pauseMultiplier = Math.min(pauseMultiplier * 1.5, 3.0);
+                    } else if (analysis.status === 'warning') {
+                        console.warn(`⚠️ TAXA ELEVADA: ${(analysis.rate * 100).toFixed(1)}% rejeição.`);
+                        basePause = MAX_BATCH_PAUSE_MS; 
+                        pauseMultiplier = Math.min(pauseMultiplier * 1.2, 2.0); 
+                    } else {
+                        // Taxa normal: pausa progressiva por lote
+                        if (batchCounter <= 2) basePause = MIN_BATCH_PAUSE_MS; 
+                        else if (batchCounter <= 5) basePause = (MIN_BATCH_PAUSE_MS + MAX_BATCH_PAUSE_MS) / 2; 
+                        else basePause = MAX_BATCH_PAUSE_MS;
+                        
+                        pauseMultiplier = Math.max(pauseMultiplier * 0.95, 1.0);
+                    }
 
-                console.log(`🔄 Lote concluído (${sentInBatch} enviados). Pausa de ${(pauseDuration / 60000).toFixed(1)} min.`);
+                    const variance = basePause * 0.3; 
+                    pauseDuration = (basePause * pauseMultiplier) + (Math.random() * variance - variance/2);
+                    pauseDuration = Math.min(pauseDuration, MAX_ALLOWED_PAUSE_MS);
+                }
 
+                console.log(`🔄 Lote ${batchCounter} concluído (${sentInBatch} envios). Pausa: ${(pauseDuration / 60000).toFixed(1)} min.`);
                 stateManager.forceSave();
                 await updateProgressEmbed();
-
-                await wait(pauseDuration); // Usa o wait inteligente
+                await wait(pauseDuration);
                 randomizeParameters();
 
                 if (!stateManager.state.active || stateManager.state.queue.length === 0) break;
-
                 sentInBatch = 0;
                 currentBatchSize = getNextBatchSize();
             }
 
             const userId = state.queue.shift();
             await stateManager.modify(() => { });
+
+            // =======================================================
+            // 🆕 NOVO: VERIFICAÇÃO SE O MEMBRO AINDA ESTÁ NO SERVIDOR
+            // =======================================================
+            let member;
+            try {
+                member = await guild.members.fetch(userId).catch(() => null);
+            } catch (e) { member = null; }
+
+            if (!member) {
+                console.log(`🚪 Membro ${userId} não está mais no servidor. Pulando.`);
+                await stateManager.modify(s => {
+                    const gData = ensureGuildData(s, guildId);
+                    if (!gData.processedMembers.includes(userId)) gData.processedMembers.push(userId);
+                });
+                consecutiveClosedCount = 0;
+                continue; 
+            }
+            // =======================================================
 
             if (gd.blockedDMs && gd.blockedDMs.includes(userId)) {
                 console.log(`⏭️ Bloqueado: ${userId}`);
@@ -633,31 +720,69 @@ async function workerLoop() {
 
             if (user.bot || isSuspiciousAccount(user)) {
                 console.log(`🚫 Ignorado (Bot/Suspeito): ${user.tag}`);
+                consecutiveClosedCount = 0; 
                 continue;
             }
 
+            // 🚦 CONTROLE DE THROUGHPUT (A cada 10 envios)
+            if (sentInBatch > 0 && sentInBatch % HOURLY_CHECK_INTERVAL === 0) {
+                const limitCheck = checkHourlyLimit();
+                if (limitCheck.exceeded) {
+                    const waitMinutes = Math.ceil(limitCheck.waitTime / 60000);
+                    console.warn(`⏱️ LIMITE HORÁRIO ATINGIDO (${MAX_SENDS_PER_HOUR}/h). Aguardando ${waitMinutes} min...`);
+                    stateManager.forceSave();
+                    await updateProgressEmbed();
+                    await wait(limitCheck.waitTime);
+                    sendsThisHour = 0;
+                    hourlyResetTime = Date.now() + 3600000;
+                }
+            }
+
             const result = await sendStealthDM(user, state.text, state.attachments);
+
+            // 📊 REGISTRA RESULTADO NO SISTEMA DE ANÁLISE
+            if (result.success) addResult('success');
+            else if (result.reason === 'closed') addResult('closed');
+            else addResult('fail');
 
             await stateManager.modify(s => {
                 const gData = ensureGuildData(s, guildId);
 
                 if (result.success) {
                     s.currentRunStats.success++;
+                    consecutiveClosedCount = 0; // ✅ SUCESSO → RESETA CONTADOR
                     const idx = gData.failedQueue.indexOf(userId);
                     if (idx > -1) gData.failedQueue.splice(idx, 1);
                 } else {
                     if (result.reason === "closed") {
                         s.currentRunStats.closed++;
+                        consecutiveClosedCount++; // 🚫 DM FECHADA → INCREMENTA CONTADOR
                         if (!gData.blockedDMs.includes(userId)) gData.blockedDMs.push(userId);
                     } else if (result.reason === "quarantine") {
                         s.active = false;
+                        consecutiveClosedCount = 0;
                     } else {
                         s.currentRunStats.fail++;
+                        consecutiveClosedCount = 0;
                         if (!gData.failedQueue.includes(userId)) gData.failedQueue.push(userId);
                     }
                 }
                 if (!gData.processedMembers.includes(userId)) gData.processedMembers.push(userId);
             });
+
+            // =======================================================
+            // 🛡️ CIRCUIT BREAKER (DMs Fechadas Consecutivas)
+            // =======================================================
+            if (consecutiveClosedCount >= MAX_CONSECUTIVE_CLOSED) {
+                console.warn(`🛡️ ALERTA: ${consecutiveClosedCount} DMs fechadas seguidas. Iniciando resfriamento de ${(CLOSED_DM_COOLING_MS / 60000).toFixed(1)} min...`);
+                stateManager.forceSave();
+                await updateProgressEmbed();
+                await wait(CLOSED_DM_COOLING_MS); 
+                consecutiveClosedCount = 0; // Reseta
+                randomizeParameters(); 
+                console.log("❄️ Resfriamento concluído. Retomando envio...");
+            }
+            // =======================================================
 
             if (stateManager.state.quarantine) {
                 await sendBackupEmail("Quarentena Detectada (API Flag)", stateManager.state);
@@ -665,7 +790,7 @@ async function workerLoop() {
             }
 
             if (detectSoftBan(state.currentRunStats)) {
-                console.error("🚨 SOFT-BAN DETECTADO.");
+                console.error("🚨 SOFT-BAN DETECTADO (Taxa de Falha Alta).");
                 await stateManager.modify(s => {
                     s.quarantine = true;
                     s.active = false;
@@ -678,18 +803,22 @@ async function workerLoop() {
 
             if (result.success) {
                 let d = currentDelayBase + Math.floor(Math.random() * DELAY_RANDOM_MS);
-
                 if (Math.random() < EXTRA_LONG_DELAY_CHANCE) {
                     const extra = IS_LOCAL ? 5000 : EXTRA_LONG_DELAY_MS + Math.floor(Math.random() * 25000);
                     d += extra;
                     console.log(`💭 Pensando na vida... +${(extra / 1000).toFixed(0)}s extra`);
                 }
-
                 await wait(d);
             } else {
-                const penalty = result.reason === "closed"
-                    ? (IS_LOCAL ? 1000 : 5000)
-                    : (IS_LOCAL ? 2000 : 20000);
+                // 🚨 PENALIDADE ADAPTATIVA
+                let penalty;
+                if (result.reason === "closed") {
+                    const multiplier = Math.min(consecutiveClosedCount, 5); 
+                    penalty = IS_LOCAL ? 1000 * multiplier : 5000 * multiplier;
+                    if (consecutiveClosedCount >= 2) console.warn(`⚠️ ${consecutiveClosedCount} DMs fechadas seguidas. Delay aumentado: ${(penalty/1000).toFixed(1)}s`);
+                } else {
+                    penalty = IS_LOCAL ? 2000 : 20000;
+                }
                 await wait(penalty);
             }
             sentInBatch++;
@@ -763,15 +892,10 @@ async function finalizeSending() {
         try {
             const ch = await client.channels.fetch(state.progressMessageRef.channelId);
             const msg = await ch.messages.fetch(state.progressMessageRef.messageId);
-
-            // Edita a mensagem onde ela estiver (DM ou Canal)
             await msg.edit({ content: finalText, embeds: [embed] }).catch(async (err) => {
-                // Fallback se falhar editar
                 if (state.privacyMode === 'public') {
-                    console.warn("⚠️ Falha ao editar msg final. Enviando nova (PÚBLICA)...", err.message);
                     await ch.send({ content: finalText, embeds: [embed] });
                 } else {
-                    console.warn("🔒 Falha ao editar msg final na DM. Enviando nova...");
                     if (state.initiatorId) {
                         try {
                             const user = await client.users.fetch(state.initiatorId);
@@ -779,9 +903,7 @@ async function finalizeSending() {
                                 content: `⚠️ **Relatório Final (Fallback)**\n${finalText}`,
                                 embeds: [embed]
                             });
-                        } catch (dmErr) {
-                            console.error("❌ Falha crítica: Não foi possível enviar o relatório na DM.", dmErr.message);
-                        }
+                        } catch (dmErr) {}
                     }
                 }
             });
@@ -833,7 +955,6 @@ function calculateCooldownInfo(guildData) {
 // ============================================================================
 setInterval(() => {
     const inactiveTime = Date.now() - lastActivityTime;
-
     if (inactiveTime > INACTIVITY_THRESHOLD) {
         console.error(`🚨 ALERTA: Processo inativo por ${(inactiveTime / 60000).toFixed(1)} minutos!`);
         console.error("Possível congelamento detectado. Forçando salvamento...");
@@ -843,11 +964,11 @@ setInterval(() => {
             sendBackupEmail("Inatividade Suspeita (Possível Freeze)", stateManager.state)
                 .then(() => {
                     console.error("🔄 Reiniciando processo para recuperação...");
-                    process.exit(1); // Railway vai reiniciar automaticamente
+                    process.exit(1); 
                 });
         }
     }
-}, 60000); // Checa a cada 1 minuto
+}, 60000);
 
 // ============================================================================
 // 🎮 LÓGICA CENTRAL DOS COMANDOS
@@ -876,27 +997,15 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     // 1. Processa filtros
     const parsed = parseSelectors(filtersStr || "");
     let rawInputText = text || "";
-
-    // Texto base limpo dos IDs
     let messageText = parsed.cleaned || rawInputText.replace(/([+-])\{(\d{5,30})\}/g, "").trim();
 
-    // ==================================================================
-    // 🏗️ MOTOR DE RECONSTRUÇÃO DE LAYOUT (CORREÇÃO SLASH)
-    // ==================================================================
+    // Reconstrução de layout (Slash)
     if (isSlash && messageText) {
-        // 1. TRANSFORMA MÚLTIPLOS ESPAÇOS EM QUEBRA DE PARÁGRAFO (\n\n)
         messageText = messageText.replace(/ {2,}/g, '\n\n');
-
-        // 2. RECUPERA OS BULLET POINTS
         messageText = messageText.replace(/ ([*•+]) /g, '\n$1 ');
-
-        // 3. RECUPERA TÍTULOS (Markdown Headers)
         messageText = messageText.replace(/ (#+) /g, '\n\n$1 ');
-
-        // 4. Correção fina
         messageText = messageText.replace(/\n /g, '\n');
     }
-    // ==================================================================
 
     if (!messageText && !attachmentUrl) return unifiedReply(ctx, "❌ Envie texto ou anexo.");
 
@@ -945,7 +1054,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
         s.currentRunStats = { success: 0, fail: 0, closed: 0 };
         s.ignore = parsed.ignore;
         s.only = parsed.only;
-
         s.privacyMode = isSlash ? 'private' : 'public';
         s.initiatorId = initiatorId;
 
@@ -960,7 +1068,6 @@ async function execAnnounce(ctx, text, attachmentUrl, filtersStr) {
     let progressMsg;
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
-
         try {
             const dmChannel = await ctx.user.createDM();
             const initialEmbed = new EmbedBuilder()
@@ -1036,7 +1143,6 @@ async function execResume(ctx, attachmentUrl) {
         st.text = textToSend;
         st.attachments = attachToSend || [];
         st.currentRunStats = { success: 0, fail: 0, closed: 0 };
-
         st.privacyMode = isSlash ? 'private' : 'public';
         st.initiatorId = initiatorId;
 
@@ -1050,14 +1156,12 @@ async function execResume(ctx, attachmentUrl) {
 
     if (ctx.isChatInputCommand?.()) {
         await ctx.deferReply({ ephemeral: true });
-
         try {
             const dmChannel = await ctx.user.createDM();
             const dmEmbed = new EmbedBuilder()
                 .setTitle("📨 Retomando...")
                 .setColor("#00AEEF")
                 .setDescription(`Fila: ${allIds.length} | Sucesso: 0`);
-
             progressMsg = await dmChannel.send({ content: msgContent, embeds: [dmEmbed] });
             await ctx.editReply({ content: "✅ Painel de retomada enviado para sua DM!" });
         } catch (e) {
@@ -1078,23 +1182,16 @@ async function execResume(ctx, attachmentUrl) {
 }
 
 async function execStop(ctx) {
-    if (ctx.isChatInputCommand?.()) {
-        await ctx.deferReply({ ephemeral: true });
-    }
-
+    if (ctx.isChatInputCommand?.()) await ctx.deferReply({ ephemeral: true });
     await stateManager.modify(s => s.active = false);
     await sendBackupEmail("Stop Manual", stateManager.state);
     unifiedReply(ctx, "🛑 Parado (Backup enviado).");
 }
 
 async function execStatus(ctx) {
-    if (ctx.isChatInputCommand?.()) {
-        await ctx.deferReply({ ephemeral: true });
-    }
-
+    if (ctx.isChatInputCommand?.()) await ctx.deferReply({ ephemeral: true });
     const state = stateManager.state;
     const gd = ensureGuildData(state, ctx.guild.id);
-
     const isActive = state.active && state.currentAnnounceGuildId === ctx.guild.id;
 
     const embed = new EmbedBuilder()
@@ -1104,7 +1201,7 @@ async function execStatus(ctx) {
             { name: "Estado", value: isActive ? "🟢 Ativo" : "⚪ Parado", inline: true },
             { name: "Pendentes", value: `${gd.pendingQueue?.length || 0}`, inline: true },
             { name: "Fila Atual", value: `${state.queue.length}`, inline: true },
-            { name: "🚫 DMs Fechadas", value: `${gd.blockedDMs.length}`, inline: true }
+            { name: "Rejeição Atual", value: `${(analyzeRejectionRate().rate * 100).toFixed(1)}%`, inline: true }
         );
 
     unifiedReply(ctx, "", [embed]);
@@ -1141,7 +1238,6 @@ async function registerSlashCommands() {
         console.log('✅ Slash Commands Registrados!');
     } catch (e) {
         console.error("❌ Erro ao registrar Slash Commands:", e);
-        console.log("⚠️ Se estiver em DEV, pode demorar até 1 hora para sincronizar.");
     }
 }
 
@@ -1153,7 +1249,6 @@ client.on('interactionCreate', async interaction => {
     }
 
     const { commandName } = interaction;
-
     try {
         if (commandName === 'announce') {
             const texto = interaction.options.getString('texto');
@@ -1170,11 +1265,6 @@ client.on('interactionCreate', async interaction => {
         }
     } catch (error) {
         console.error(`💥 Erro ao executar comando /${commandName}:`, error);
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: `❌ Erro interno ao executar /${commandName}.`, ephemeral: true });
-        } else {
-            await interaction.editReply({ content: `❌ Erro interno ao executar /${commandName}.` });
-        }
     }
 });
 
@@ -1219,7 +1309,6 @@ process.on("uncaughtException", (err) => {
     process.exit(1);
 });
 client.on("error", (err) => console.error("❌ Client Error:", err));
-client.on('shardError', error => console.error('🔌 WebSocket Error:', error));
 
 if (!process.env.DISCORD_TOKEN) {
     console.error("❌ Erro: DISCORD_TOKEN ausente.");
