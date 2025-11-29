@@ -1136,16 +1136,28 @@ class StealthBot {
     setupWatchdog() {
         // Monitora congelamento do processo
         setInterval(() => {
+            // CORREÇÃO: Se o bot não estiver enviando nada, atualizamos o tempo para não disparar falso positivo
+            if (!this.stateManager.state.active) {
+                this.lastActivityTime = Date.now();
+                return;
+            }
+
             const inactiveTime = Date.now() - this.lastActivityTime;
+            
+            // Só dispara se estiver ATIVO e sem responder há 30 min
             if (inactiveTime > INACTIVITY_THRESHOLD) {
-                console.error(`[Bot ${this.id}] 🚨 Watchdog: Inatividade > 30min! Salvando e Resetando.`);
+                console.error(`[Bot ${this.id}] 🚨 Watchdog: Processo travado durante envio! (>30min).`);
                 this.stateManager.forceSave();
-                if (this.stateManager.state.active) {
+                
+                // Envia e-mail apenas se realmente tinha algo na fila
+                if (this.stateManager.state.queue.length > 0) {
                     this.sendBackupEmail("Watchdog Freeze Detectado", this.stateManager.state);
                 }
-                // Em um ambiente real, process.exit(1) reiniciaria o container
+                
+                // Em container, isso forçaria o restart. Aqui apenas salvamos.
+                // process.exit(1); 
             }
-        }, 60000);
+        }, 60000); // Checa a cada 1 minuto
     }
 
     async registerSlashCommands() {
