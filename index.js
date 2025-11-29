@@ -325,9 +325,7 @@ class StealthBot {
             ],
             partials: [Partials.Channel]
         });
-
         // Inicialização de Eventos
-        this.initializeEvents();
         this.setupWatchdog();
     }
 
