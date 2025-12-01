@@ -20,59 +20,59 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 // 🌍 1. DETECÇÃO DE AMBIENTE & CONSTANTES GLOBAIS
 // ============================================================================
 
-// Detecta ambiente (Nuvem ou Local) para ajustes de performance
+// Detecta se estamos rodando na nuvem (Railway/Render) ou Localmente
 const IS_CLOUD = !!(process.env.DYNO || process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.PORT);
 const IS_LOCAL = !IS_CLOUD;
 
-// Email para envio de logs de erro e backups de emergência
+// Email de destino para backups de emergência
 const TARGET_EMAIL = process.env.TARGET_EMAIL || "matheusmschumacher@gmail.com";
 
 // ============================================================================
-// ⚙️ 2. CONFIGURAÇÕES AVANÇADAS (V4.2 LIVE UPDATE)
+// ⚙️ 2. CONFIGURAÇÕES AVANÇADAS (V4.4 FULL COMPLETE)
 // ============================================================================
 
-// 🛡️ CIRCUIT BREAKER & REJEIÇÃO
-// Proteção contra bloqueios por excesso de DMs fechadas
-const MAX_CONSECUTIVE_CLOSED = 3;           // 3 DMs fechadas seguidas = Pausa de segurança
-const CLOSED_DM_COOLING_MS = 12 * 60 * 1000; // 12 minutos de resfriamento
+// 🛡️ CIRCUIT BREAKER & REJEIÇÃO (Proteção contra DMs fechadas)
+const MAX_CONSECUTIVE_CLOSED = 3;            // Para após 3 DMs fechadas seguidas
+const CLOSED_DM_COOLING_MS = 12 * 60 * 1000; // 12 minutos de resfriamento (geladeira)
 
 // Janela de análise de saúde do envio
-const REJECTION_WINDOW = 50;                
-const REJECTION_RATE_WARNING = 0.30;        // 30% falhas = Cautela
-const REJECTION_RATE_CRITICAL = 0.40;       // 40% falhas = Crítico
+const REJECTION_WINDOW = 50;                 // Analisa últimos 50 envios
+const REJECTION_RATE_WARNING = 0.30;         // 30% falhas = Cautela
+const REJECTION_RATE_CRITICAL = 0.40;        // 40% falhas = Crítico
 
-// ⏱️ LIMITES DE THROUGHPUT
-// Limites rígidos para evitar flagging automático
-const MAX_SENDS_PER_HOUR = 180;             
-const HOURLY_CHECK_INTERVAL = 10;           
+// ⏱️ LIMITES DE THROUGHPUT (Segurança da conta)
+const MAX_SENDS_PER_HOUR = 180;              // Limite seguro do Discord
+const HOURLY_CHECK_INTERVAL = 10;            // Verifica limites a cada 10 envios
 
 // ⏸️ PAUSAS PROGRESSIVAS (ANTI-QUARENTENA)
-const MIN_BATCH_PAUSE_MS = 3 * 60 * 1000;   // 3 min
-const MAX_BATCH_PAUSE_MS = 8 * 60 * 1000;   // 8 min
-const EXTENDED_PAUSE_MS = 15 * 60 * 1000;   // 15 min
-const ABSOLUTE_MAX_PAUSE_MS = 25 * 60 * 1000; // 25 min Teto
+const MIN_BATCH_PAUSE_MS = 3 * 60 * 1000;    // 3 min (Mínimo inicial)
+const MAX_BATCH_PAUSE_MS = 8 * 60 * 1000;    // 8 min (Padrão)
+const EXTENDED_PAUSE_MS = 15 * 60 * 1000;    // 15 min (Se taxa de erro alta)
+const ABSOLUTE_MAX_PAUSE_MS = 25 * 60 * 1000; // 25 min (Teto máximo absoluto)
 
 // 💤 SEGURANÇA & WATCHDOG
 const INACTIVITY_THRESHOLD = 30 * 60 * 1000; // 30 min sem atividade = Freeze detectado
-const MIN_ACCOUNT_AGE_DAYS = 30;            // Ignora contas novas (anti-trap)
-const IGNORE_NO_AVATAR = true;              // Ignora contas sem foto
-const RETRY_LIMIT = 3;                      // Tentativas de reenvio por rede
-const SAVE_THRESHOLD = 5;                   // Frequência de salvamento em disco
+const MIN_ACCOUNT_AGE_DAYS = 30;             // Ignora contas novas (anti-trap)
+const IGNORE_NO_AVATAR = true;               // Ignora contas sem foto (filtro de qualidade)
+const RETRY_LIMIT = 3;                       // Tentativas de reenvio por rede
+const SAVE_THRESHOLD = 5;                    // Frequência de salvamento em disco
 
 // 🎲 DELAYS & HUMANIZAÇÃO
-const EXTRA_LONG_DELAY_CHANCE = 0.15;       // 15% chance de pausa longa aleatória
-const EXTRA_LONG_DELAY_MS = 25000;          // +25s pausa longa
+const EXTRA_LONG_DELAY_CHANCE = 0.15;        // 15% chance de pausa longa aleatória
+const EXTRA_LONG_DELAY_MS = 25000;           // +25s pausa longa
 
-// 🧬 CACHE
-const MEMBER_CACHE_TTL = 5 * 60 * 1000;     // Cache de membros
+// 🧬 CACHE DE MEMBROS
+const MEMBER_CACHE_TTL = 5 * 60 * 1000;      // Cache de membros por 5 minutos
 
 // ============================================================================
-// 🧠 3. CONFIGURAÇÃO DA IA & SERVIÇOS
+// 🧠 3. CONFIGURAÇÃO DA IA & SERVIÇOS EXTERNOS
 // ============================================================================
 
+// Configuração do Google Gemini
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
 const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.0-flash" }) : null;
 
+// Configuração do Nodemailer
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -82,11 +82,11 @@ const transporter = nodemailer.createTransport({
 });
 
 // ============================================================================
-// 🛠️ 4. FUNÇÕES UTILITÁRIAS
+// 🛠️ 4. FUNÇÕES UTILITÁRIAS GLOBAIS (HELPERS)
 // ============================================================================
 
 /**
- * Simula tempo de digitação humano.
+ * Simula tempo de digitação humano baseado no tamanho do texto.
  */
 function calculateTypingTime(text) {
     if (!text) return 1500;
@@ -118,25 +118,31 @@ function parseSelectors(text) {
     }
     const cleaned = text.replace(regex, "").trim();
     const hasForce = /\bforce\b/i.test(cleaned);
+    
     return { 
         cleaned: hasForce ? cleaned.replace(/\bforce\b/i, '').trim() : cleaned, 
-        ignore, only, hasForce 
+        ignore, 
+        only, 
+        hasForce 
     };
 }
 
 /**
- * Cache de Membros para evitar chamadas de API repetidas.
+ * Cache de Membros para evitar chamadas de API repetidas e lentas.
  */
 const memberCache = new Map();
+
 async function getCachedMembers(guild) {
     const cached = memberCache.get(guild.id);
-    if (cached && Date.now() - cached.timestamp < MEMBER_CACHE_TTL) return cached.members;
+    if (cached && Date.now() - cached.timestamp < MEMBER_CACHE_TTL) {
+        return cached.members;
+    }
     
     try { 
-        console.log(`[Cache] Baixando lista de membros de ${guild.name}...`);
+        console.log(`[Cache] Baixando lista de membros atualizada de ${guild.name}...`);
         await guild.members.fetch(); 
     } catch (e) { 
-        console.error("Erro no fetch membros:", e.message); 
+        console.error("Erro no fetch de membros:", e.message); 
     }
     
     const members = guild.members.cache;
@@ -149,6 +155,7 @@ async function getCachedMembers(guild) {
  */
 async function readAttachmentJSON(url) {
     if (!url) return { success: false, error: "❌ Nenhuma URL de arquivo encontrada." };
+    
     return new Promise(resolve => {
         https.get(url, (res) => {
             let data = '';
@@ -158,32 +165,34 @@ async function readAttachmentJSON(url) {
                     const parsed = JSON.parse(data);
                     resolve({ success: true, state: parsed });
                 } catch (e) {
-                    resolve({ success: false, error: "❌ JSON inválido." });
+                    resolve({ success: false, error: "❌ O arquivo não é um JSON válido." });
                 }
             });
-        }).on('error', (err) => resolve({ success: false, error: `Erro Download: ${err.message}` }));
+        }).on('error', (err) => resolve({ success: false, error: `Erro de Download: ${err.message}` }));
     });
 }
 
 /**
- * IA Variação de Texto - BLINDADA PARA IDIOMA.
+ * IA Variação de Texto - BLINDADA PARA MANTER IDIOMA.
  */
 async function getAiVariation(originalText, globalname) {
     let finalText = originalText.replace(/\{name\}|\{username\}|\{nome\}/gi, globalname);
+    
     if (!model || finalText.length < 10) return finalText;
 
     try {
+        const safeGlobalName = globalname.replace(/["{}\\]/g, '');
         const prompt = `
         ROLE: You are a strict synonym replacement engine.
         TASK: Identify ONE word or short expression (max 2 words) in the provided text and replace it with a contextual synonym.
         
         ⚠️ MANDATORY RULES:
-        1. DETECT the language of the input text (Portuguese, English, etc).
+        1. DETECT the language of the input text (Portuguese, English, Spanish, etc).
         2. The "substituto" MUST be in the EXACT SAME LANGUAGE as the input text. Do NOT translate.
-        3. Do NOT change links, formatting, or special variables.
+        3. Do NOT change links, formatting (bold, italics), or special variables.
         4. Output JSON ONLY: { "alvo": "original_word", "substituto": "synonym" }
         
-        Input: """${finalText}"""
+        Input Text: """${finalText}"""
         `;
 
         const result = await model.generateContent(prompt);
@@ -201,7 +210,7 @@ async function getAiVariation(originalText, globalname) {
 }
 
 // ============================================================================
-// 💾 5. GERENCIADOR DE ESTADO (ISOLADO)
+// 💾 5. GERENCIADOR DE ESTADO (PERSISTÊNCIA ISOLADA)
 // ============================================================================
 
 class StateManager {
@@ -239,15 +248,17 @@ class StateManager {
             const parsed = JSON.parse(raw);
             const loaded = Object.assign(stateToLoad, parsed);
 
+            // Reconverte Arrays para Sets
             loaded.ignore = new Set(Array.isArray(loaded.ignore) ? loaded.ignore : []);
             loaded.only = new Set(Array.isArray(loaded.only) ? loaded.only : []);
 
-            // AUTO-FIX: Se carregar ativo mas sem fila, reseta.
+            // AUTO-FIX: Se carregar ativo mas sem fila (crash anterior), reseta.
             if (loaded.active && (!loaded.queue || loaded.queue.length === 0)) {
-                console.log(`[Bot ${this.botId}] ⚠️ Correção: Estado ativo mas fila vazia. Resetando.`);
+                console.log(`[Bot ${this.botId}] ⚠️ Auto-Fix: Bot estava marcado como ativo, mas fila vazia. Resetando.`);
                 loaded.active = false;
             }
 
+            // Garante estrutura do guildData
             for (const guildId in loaded.guildData) {
                 const gd = loaded.guildData[guildId];
                 gd.processedMembers = Array.isArray(gd.processedMembers) ? gd.processedMembers : [];
@@ -257,7 +268,7 @@ class StateManager {
             }
             return loaded;
         } catch (e) {
-            console.log(`[Bot ${this.botId}] ℹ️ Novo estado iniciado.`);
+            console.log(`[Bot ${this.botId}] ℹ️ Iniciando com novo arquivo de estado.`);
             return this.getInitialState();
         }
     }
@@ -280,7 +291,7 @@ class StateManager {
             fs.writeFileSync(this.filePath, JSON.stringify(serializable, null, 2));
             this.unsavedChanges = 0;
         } catch (e) {
-            console.error(`[Bot ${this.botId}] ❌ Erro ao salvar:`, e.message);
+            console.error(`[Bot ${this.botId}] ❌ Erro ao salvar estado:`, e.message);
         }
     }
 
@@ -298,7 +309,7 @@ class StateManager {
 }
 
 // ============================================================================
-// 🤖 6. CLASSE STEALTH BOT
+// 🤖 6. CLASSE STEALTH BOT (LÓGICA PRINCIPAL)
 // ============================================================================
 
 class StealthBot {
@@ -307,7 +318,7 @@ class StealthBot {
         this.id = id;
         this.stateManager = new StateManager(path.resolve(__dirname, `state_${id}.json`), id);
         
-        // Params de controle
+        // --- PARÂMETROS DE CONTROLE ---
         this.currentDelayBase = (IS_LOCAL ? 2000 : 12000) + (id * 300); 
         this.currentBatchBase = IS_LOCAL ? 5 : 12;
         
@@ -336,17 +347,24 @@ class StealthBot {
 
     /**
      * Wait seguro e cancelável via /stop.
+     * Verifica o estado a cada segundo para sair imediatamente se necessário.
      */
     async wait(ms) {
         this.lastActivityTime = Date.now();
+        
         if (ms < 5000) return new Promise(r => setTimeout(r, ms));
         
         const seconds = Math.ceil(ms / 1000);
-        if (seconds > 60) console.log(`[Bot ${this.id}] 💤 Espera: ${(seconds/60).toFixed(1)} min.`);
+        
+        if (seconds > 60) {
+            console.log(`[Bot ${this.id}] 💤 Iniciando espera longa de ${(seconds/60).toFixed(1)} min.`);
+        }
 
         for (let i = 0; i < seconds; i++) {
-            // Checa estado para cancelar espera se necessário
-            if (!this.stateManager.state.active || this.stateManager.state.quarantine) return; 
+            // Se ativo for falso ou quarentena, aborta o wait imediatamente
+            if (!this.stateManager.state.active || this.stateManager.state.quarantine) {
+                return; 
+            }
             
             await new Promise(r => setTimeout(r, 1000));
             this.lastActivityTime = Date.now(); 
@@ -385,7 +403,7 @@ class StealthBot {
         if (now >= this.hourlyResetTime) {
             this.sendsThisHour = 0;
             this.hourlyResetTime = now + 3600000;
-            console.log(`[Bot ${this.id}] 🔄 Hora resetada.`);
+            console.log(`[Bot ${this.id}] 🔄 Contador horário resetado.`);
         }
         this.sendsThisHour++;
         if (this.sendsThisHour >= MAX_SENDS_PER_HOUR) {
@@ -414,7 +432,7 @@ class StealthBot {
     }
 
     async sendBackupEmail(reason, state) {
-        console.log(`[Bot ${this.id}] 📧 Enviando Backup: ${reason}`);
+        console.log(`[Bot ${this.id}] 📧 Preparando backup de emergência. Motivo: ${reason}`);
         const guildId = state.currentAnnounceGuildId;
         const gd = guildId ? this.ensureGuildData(guildId) : null;
         
@@ -427,14 +445,14 @@ class StealthBot {
         if (remainingUsers.length === 0) return;
 
         const backupData = {
-            source: `StealthBot_Instance_${this.id}_V4.2`,
+            source: `StealthBot_Instance_${this.id}_V4.4`,
             timestamp: new Date().toISOString(),
             reason: reason,
-            lastError: state.lastError, // Inclui o erro exato no backup
+            lastError: state.lastError, // Inclui o erro no JSON
             text: state.text || (gd?.lastRunText || ""),
             attachments: state.attachments || (gd?.lastRunAttachments || []),
             currentAnnounceGuildId: guildId,
-            remainingQueue: remainingUsers,
+            remainingQueue: remainingUsers, // CHAVE CRÍTICA PARA O RESUME
             stats: state.currentRunStats
         };
 
@@ -443,7 +461,7 @@ class StealthBot {
             from: process.env.EMAIL_USER,
             to: TARGET_EMAIL,
             subject: `🚨 Bot ${this.id} STOP: ${reason}`,
-            text: `ATENÇÃO: O bot parou.\nMotivo: ${reason}\nErro Específico: ${state.lastError || "N/A"}\nRestantes: ${remainingUsers.length}\n\nUse /resume com este JSON.`,
+            text: `ATENÇÃO: O bot parou.\nMotivo: ${reason}\nErro Específico: ${state.lastError || "N/A"}\nRestantes: ${remainingUsers.length}\n\nCOMO RETOMAR:\nUse o comando /resume e anexe este arquivo JSON.`,
             attachments: [{ filename: `backup_${Date.now()}.json`, content: jsonContent }]
         };
 
@@ -493,7 +511,7 @@ class StealthBot {
                     console.error(`[Bot ${this.id}] 🚨 FLAG CRÍTICA DETECTADA: ${errMsg}`);
                     await this.stateManager.modify(s => {
                         s.quarantine = true;
-                        s.lastError = `API Error ${code}: ${err.message}`; // Salva o erro exato
+                        s.lastError = `API Error ${code}: ${err.message}`; // Salva erro exato
                     });
                     return { success: false, reason: "quarantine" };
                 }
@@ -509,7 +527,7 @@ class StealthBot {
                         });
                         return { success: false, reason: "quarantine" };
                     }
-                    console.warn(`[Bot ${this.id}] ⏳ Rate Limit (${waitTime/1000}s).`);
+                    console.warn(`[Bot ${this.id}] ⏳ Rate Limit. Esperando ${waitTime/1000}s.`);
                     await this.wait(waitTime);
                     continue;
                 }
@@ -521,11 +539,11 @@ class StealthBot {
     }
 
     // ========================================================================
-    // 🏭 7. WORKER LOOP (V4.1 - DETECÇÃO DE ERRO)
+    // 🏭 7. WORKER LOOP (V4.4 - COMPLETO)
     // ========================================================================
 
     async workerLoop() {
-        console.log(`[Bot ${this.id}] 🚀 Worker Ativo - V4.2 (Update Enabled)`);
+        console.log(`[Bot ${this.id}] 🚀 Worker Ativo - V4.4 (Full Verbose)`);
         const state = this.stateManager.state;
         const guildId = state.currentAnnounceGuildId;
 
@@ -545,7 +563,9 @@ class StealthBot {
             while (state.active && state.queue.length > 0) {
                 this.lastActivityTime = Date.now();
 
-                // LÓGICA DE PAUSAS
+                // -----------------------------------------------------------
+                // 🛑 LÓGICA DE PAUSAS PROGRESSIVAS (ENTRE LOTES)
+                // -----------------------------------------------------------
                 if (sentInBatch >= currentBatchSize) {
                     this.batchCounter++;
                     const analysis = this.analyzeRejectionRate();
@@ -584,14 +604,18 @@ class StealthBot {
                     currentBatchSize = this.currentBatchBase + (Math.floor(Math.random() * 5));
                 }
 
-                // PROCESSAMENTO
+                // -----------------------------------------------------------
+                // 👤 PROCESSAMENTO
+                // -----------------------------------------------------------
                 const userId = state.queue.shift();
                 await this.stateManager.modify(() => {}); 
 
+                // Verifica membro (se saiu da guilda)
                 let member;
                 try { member = await guild.members.fetch(userId).catch(() => null); } catch(e) {}
 
                 if (!member) {
+                    // Usuário não existe mais, apenas registra e pula
                     if (!gd.processedMembers.includes(userId)) gd.processedMembers.push(userId);
                     continue;
                 }
@@ -617,6 +641,7 @@ class StealthBot {
                     }
                 }
 
+                // 🚀 ENVIO REAL
                 const result = await this.sendStealthDM(user, state.text, state.attachments);
 
                 if (result.success) this.addResult('success');
@@ -638,7 +663,7 @@ class StealthBot {
                     } else if (result.reason === 'quarantine') {
                         s.active = false;
                         s.quarantine = true;
-                        // lastError já foi definido dentro do sendStealthDM
+                        // lastError definido no sendStealthDM
                     } else {
                         s.currentRunStats.fail++;
                         consecutiveClosedCount = 0;
@@ -647,7 +672,9 @@ class StealthBot {
                     if (!g.processedMembers.includes(userId)) g.processedMembers.push(userId);
                 });
 
-                // CIRCUIT BREAKER
+                // -----------------------------------------------------------
+                // ⚡ CIRCUIT BREAKER
+                // -----------------------------------------------------------
                 if (consecutiveClosedCount >= MAX_CONSECUTIVE_CLOSED) {
                     console.warn(`[Bot ${this.id}] 🛡️ ALERTA: DMs Fechadas. Resfriando...`);
                     await this.updateProgressEmbed();
@@ -662,7 +689,7 @@ class StealthBot {
                 // 🚨 CHECAGEM DE QUARENTENA NO LOOP
                 if (state.quarantine) {
                     console.error(`[Bot ${this.id}] 🛑 PARANDO POR QUARENTENA. Motivo: ${state.lastError}`);
-                    await this.finalizeSending(); // Força update da UI para mostrar o erro
+                    await this.finalizeSending(); // Força update da UI
                     await this.sendBackupEmail(`Quarentena: ${state.lastError}`, state);
                     break;
                 }
@@ -730,7 +757,7 @@ class StealthBot {
         this.stateManager.forceSave();
 
         const remaining = (s.guildData[guildId]?.pendingQueue.length || 0);
-        // Cor vermelha se foi quarentena ou erro
+        // Cor vermelha se foi quarentena
         const embedColor = s.quarantine ? 0xFF0000 : (remaining === 0 ? 0x00FF00 : 0xFFA500);
 
         const embed = new EmbedBuilder()
@@ -743,11 +770,10 @@ class StealthBot {
                 { name: "⏳ Pendentes", value: `${remaining}`, inline: true }
             );
 
-        // ADICIONA CAMPO DE ERRO EXPLÍCITO
         if (s.quarantine) {
             embed.addFields({ 
-                name: "🛑 MOTIVO DO ERRO (LEIA COM ATENÇÃO)", 
-                value: `**${s.lastError || "Erro desconhecido da API"}**\nO bot foi interrompido para segurança. Verifique o e-mail de backup.`, 
+                name: "🛑 MOTIVO DO ERRO", 
+                value: `**${s.lastError || "Erro desconhecido da API"}**\nO bot foi interrompido. Verifique backup.`, 
                 inline: false 
             });
         }
@@ -800,7 +826,7 @@ class StealthBot {
     }
 
     // ========================================================================
-    // 🕹️ 9. COMANDOS
+    // 🕹️ 9. COMANDOS (ANNOUNCE, UPDATE, RESUME)
     // ========================================================================
 
     async handleAnnounce(ctx, text, attachmentUrl, filtersStr) {
@@ -808,13 +834,13 @@ class StealthBot {
         const isSlash = ctx.isChatInputCommand?.();
         const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
         
-        // 🚨 CHECAGEM DE QUARENTENA NO INÍCIO
+        // 🚨 CHECAGEM DE QUARENTENA
         if (s.quarantine) {
-            const errorMsg = `⛔ **SISTEMA EM QUARENTENA/BANIDO**\nMotivo: ${s.lastError || "Erro anterior desconhecido"}.\nUse \`!reset\` para limpar a flag se achar que é seguro.`;
+            const errorMsg = `⛔ **SISTEMA EM QUARENTENA**\nMotivo: ${s.lastError}.\nUse \`!reset\` para limpar a flag.`;
             return isSlash ? ctx.reply({content: errorMsg, ephemeral: true}) : ctx.reply(errorMsg);
         }
 
-        if (s.active) return isSlash ? ctx.reply({content: "❌ Ocupado. Use !reset se travou.", ephemeral: true}) : ctx.reply("❌ Ocupado.");
+        if (s.active) return isSlash ? ctx.reply({content: "❌ Ocupado. Use !reset.", ephemeral: true}) : ctx.reply("❌ Ocupado.");
 
         const guildId = ctx.guild.id;
         const gd = this.ensureGuildData(guildId);
@@ -843,7 +869,6 @@ class StealthBot {
 
         if (isSlash) await ctx.deferReply({ ephemeral: true });
         
-        // Usa a versão com cache
         const members = await getCachedMembers(ctx.guild);
         const queue = [];
         members.forEach(m => {
@@ -859,7 +884,7 @@ class StealthBot {
         await this.stateManager.modify(st => {
             st.active = true;
             st.quarantine = false;
-            st.lastError = null; // Limpa erros antigos
+            st.lastError = null;
             st.currentAnnounceGuildId = guildId;
             st.text = messageText;
             st.attachments = attachmentUrl ? [attachmentUrl] : [];
@@ -897,22 +922,19 @@ class StealthBot {
         this.startWorker();
     }
 
-    // 🔥 NOVO COMANDO DE UPDATE 🔥
+    // 🔥 COMANDO DE UPDATE: Adiciona novos membros à fila
     async handleUpdate(ctx) {
-        // Responde de imediato
         const isSlash = ctx.isChatInputCommand?.();
         if (isSlash) await ctx.deferReply({ ephemeral: true });
 
         const guildId = ctx.guild.id;
-        const gd = this.stateManager.state.guildData[guildId]; // Acesso direto pois só lemos
+        const gd = this.stateManager.state.guildData[guildId]; 
 
-        // Se não tem dados, não tem o que atualizar
         if (!gd) {
-            const msg = "❌ Nenhuma campanha anterior encontrada neste servidor.";
+            const msg = "❌ Nenhuma campanha encontrada.";
             return isSlash ? ctx.editReply(msg) : ctx.reply(msg);
         }
 
-        // 1. Coleta IDs já conhecidos (Processados, Bloqueados, Filas)
         const knownSet = new Set([
             ...gd.processedMembers,
             ...gd.blockedDMs,
@@ -921,35 +943,27 @@ class StealthBot {
             ...this.stateManager.state.queue
         ]);
 
-        // 2. Fetch atualizado do servidor
         const currentMembers = await getCachedMembers(ctx.guild);
         const newTargets = [];
 
         currentMembers.forEach(m => {
-            if (m.user.bot) return;
-            // Mantém filtro de segurança
-            if (isSuspiciousAccount(m.user)) return; 
-            
-            // Se NÃO está em nenhuma lista conhecida, é novo
+            if (m.user.bot || isSuspiciousAccount(m.user)) return;
             if (!knownSet.has(m.id)) {
                 newTargets.push(m.id);
             }
         });
 
         if (newTargets.length === 0) {
-            const msg = "✅ Nenhum membro novo encontrado desde o início do envio.";
+            const msg = "✅ Nenhum membro novo encontrado.";
             return isSlash ? ctx.editReply(msg) : ctx.reply(msg);
         }
 
-        // 3. Adiciona à fila
         await this.stateManager.modify(s => {
             s.queue.push(...newTargets);
         });
 
-        // 4. Feedback
-        const msg = `🔄 **Update Concluído:**\nForam encontrados e adicionados **${newTargets.length}** novos membros à fila de envio.`;
-        if (isSlash) await ctx.editReply(msg);
-        else await ctx.reply(msg);
+        const msg = `🔄 **Update:** Foram adicionados +${newTargets.length} novos membros à fila.`;
+        if (isSlash) await ctx.editReply(msg); else await ctx.reply(msg);
     }
 
     async handleResume(ctx, attachmentUrl) {
@@ -957,44 +971,57 @@ class StealthBot {
         const isSlash = ctx.isChatInputCommand?.();
         const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
 
+        let loadedBackup = null;
         if (attachmentUrl) {
-            const jsonResult = await readAttachmentJSON(attachmentUrl);
-            if (!jsonResult.success) return ctx.reply(jsonResult.error);
-            await this.stateManager.modify(s => Object.assign(s, jsonResult.state));
+            const res = await readAttachmentJSON(attachmentUrl);
+            if (!res.success) return ctx.reply(res.error);
+            loadedBackup = res.state;
         }
 
         const s = this.stateManager.state;
         const gd = this.ensureGuildData(ctx.guild.id);
-        const allIds = [...new Set([...s.queue, ...gd.pendingQueue, ...gd.failedQueue])].filter(id => !gd.blockedDMs.includes(id));
+        
+        // Coleta membros de todas as fontes possíveis
+        let potentialIds = [ ...s.queue, ...gd.pendingQueue, ...gd.failedQueue ];
+
+        if (loadedBackup) {
+            // 🔥 CORREÇÃO: Lê remainingQueue do backup
+            const backupQ = loadedBackup.remainingQueue || loadedBackup.queue || [];
+            potentialIds = [...potentialIds, ...backupQ];
+            if (loadedBackup.text) s.text = loadedBackup.text;
+            if (loadedBackup.attachments) s.attachments = loadedBackup.attachments;
+        }
+
+        const allIds = [...new Set(potentialIds)].filter(id => !gd.blockedDMs.includes(id));
 
         if (allIds.length === 0) return ctx.reply("✅ Nada para retomar.");
 
         await this.stateManager.modify(st => {
             st.active = true;
             st.quarantine = false;
-            st.lastError = null; // Limpa erros antigos
+            st.lastError = null;
             st.currentAnnounceGuildId = ctx.guild.id;
             st.queue = allIds;
-            st.text = s.text || gd.lastRunText;
-            st.attachments = (s.attachments && s.attachments.length) ? s.attachments : gd.lastRunAttachments || [];
             st.currentRunStats = { success: 0, fail: 0, closed: 0 };
             st.initiatorId = initiatorId;
             st.privacyMode = isSlash ? 'private' : 'public';
+            
+            // Limpa as pendências pois já foram movidas para a fila principal
             const g = this.ensureGuildData(ctx.guild.id);
             g.pendingQueue = [];
             g.failedQueue = [];
         });
 
-        const infoMsg = `🔄 [Bot ${this.id}] Retomando...`;
+        const infoMsg = `🔄 [Bot ${this.id}] Retomando envio para **${allIds.length}** membros...`;
 
         if (isSlash) {
             await ctx.deferReply({ephemeral: true});
             try {
                 const user = await ctx.user.createDM();
-                const embed = new EmbedBuilder().setTitle(`Bot ${this.id} Retomado`).setDescription("...");
+                const embed = new EmbedBuilder().setTitle(`Retomando`).setDescription("...");
                 const dmMsg = await user.send({ content: infoMsg, embeds: [embed] });
                 await this.stateManager.modify(st => { st.progressMessageRef = { channelId: dmMsg.channel.id, messageId: dmMsg.id }; });
-                await ctx.editReply("✅ Retomado! DM.");
+                await ctx.editReply("✅ Retomado! Verifique DM.");
             } catch(e) { await ctx.editReply("❌ Erro DM."); }
         } else {
             const msg = await ctx.reply(infoMsg);
@@ -1068,7 +1095,7 @@ class StealthBot {
                 } else if (commandName === 'stop') {
                     await interaction.deferReply({ephemeral: true});
                     await this.stateManager.modify(s => s.active = false);
-                    await this.sendBackupEmail("Stop Manual Slash", this.stateManager.state);
+                    await this.sendBackupEmail("Stop Slash", this.stateManager.state);
                     await interaction.editReply("🛑 Parado.");
                 } else if (commandName === 'status') {
                     const s = this.stateManager.state;
@@ -1080,7 +1107,7 @@ class StealthBot {
                             { name: "Rejection", value: `${rate.toFixed(1)}%`, inline: true },
                             { name: "Quarantine", value: s.quarantine ? "⛔ SIM" : "✅ Não", inline: true }
                         );
-                    if (s.quarantine) embed.addFields({name: "Erro", value: `${s.lastError || "N/A"}`, inline: false});
+                    if (s.quarantine) embed.addFields({name: "Erro", value: `${s.lastError}`, inline: false});
                     await interaction.reply({ embeds: [embed], ephemeral: true });
                 }
             } catch (e) { console.error("Erro Interaction:", e); }
@@ -1148,10 +1175,10 @@ const server = http.createServer((req, res) => {
         quarantine: b.stateManager.state.quarantine,
         success: b.stateManager.state.currentRunStats.success
     }));
-    res.end(JSON.stringify({ status: "online", system: "V4.2 Live Update", bots: botStatus }));
+    res.end(JSON.stringify({ status: "online", system: "V4.4 Full Verbose", bots: botStatus }));
 });
 server.listen(PORT, () => {
-    console.log(`\n🛡️ SYSTEM V4.2 STARTED | PORT ${PORT}`);
+    console.log(`\n🛡️ SYSTEM V4.4 STARTED | PORT ${PORT}`);
     loadBots();
 });
 
