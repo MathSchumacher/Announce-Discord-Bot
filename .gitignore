@@ -1,6 +1,7 @@
 # Node modules
 node_modules/
-
+tests/
+backup/
 # Environment variables
 .env
 .env.local

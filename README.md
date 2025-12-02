@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
- <img src="./img/ICON_BOT.png" width="450">
+ <img src="./img/announce_bot.jpg" width="450">
 </p>
 
 *Developed by **Matheus Schumacher** & Gemini Engineering Team.*
