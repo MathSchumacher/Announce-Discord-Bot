@@ -11,7 +11,7 @@
  <img src="./img/announce_bot.jpg" width="450">
 </p>
 
-*Developed by **Matheus Schumacher** & Gemini Engineering Team.*
+*Developed by **Matheus Schumacher**.*
 
 <big>Next-generation Discord Mass DM System with **Adaptive Anti-Spam**, **Live Activity Panel**, **Smart Backup Recovery**, and **AI-Powered Humanization**. Designed for **maximum stealth** and **zero-downtime** operation.</big>
 
