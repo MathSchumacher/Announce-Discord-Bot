@@ -1,473 +1,526 @@
-﻿﻿<h1 align="center">🚀 Announce Discord Bot v2.5: Sistema Anti-Quarentena com IA 🤖</h1>
+﻿﻿<h1 align="center">🚀 Discord Mass DM Bot - V8.7.1 AURORA POLISHED 🤖</h1>
 <p align="center">
 <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js">
-<img src="https://img.shields.io/badge/Discord.js-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord.js">
-<img src="https://img.shields.io/badge/Nodemailer-007bff?style=for-the-badge&logo=nodemailer&logoColor=white" alt="Nodemailer">
-<img src="https://img.shields.io/badge/Gemini_AI-8E75B2?style=for-the-badge&logo=google&logoColor=white" alt="Gemini AI">
-<img src="https://img.shields.io/badge/Anti--Quarantine-🛡️-red?style=for-the-badge" alt="Anti-Quarantine">
+<img src="https://img.shields.io/badge/Discord.js_v14-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord.js">
+<img src="https://img.shields.io/badge/Gemini_2.5_Flash-8E75B2?style=for-the-badge&logo=google&logoColor=white" alt="Gemini AI">
+<img src="https://img.shields.io/badge/Multi--Bot-🤖-blue?style=for-the-badge" alt="Multi-Bot">
+<img src="https://img.shields.io/badge/Production_Ready-✅-green?style=for-the-badge" alt="Production Ready">
 </p>
 
 <p align="center">
  <img src="./img/ICON_BOT.png" width="450">
 </p>
 
-*Desenvolvido por **Matheus Schumacher**.*
+*Developed by **Matheus Schumacher** & Gemini Engineering Team.*
 
-<big>Sistema de próxima geração para comunicação DM em massa no Discord, equipado com **Sistema Anti-Quarentena V2** adaptativo, **IA Generativa (Gemini)** para humanização, e **proteção multi-camadas** contra rate limits. Projetado para operar com **máxima segurança** em servidores de qualquer escala (100-5000+ membros).</big>
-
----
-
-## **✨ Novidades da v2.5 - Sistema Anti-Quarentena V2**
-
-### **🛡️ Proteção Adaptativa Avançada**
-
-Sistema revolucionário que **aprende e se adapta** em tempo real para evitar quarentena do Discord.
-
-| Recurso | Descrição | Benefício |
-|---------|-----------|-----------|
-| **🧮 Monitor de Taxa de Rejeição** | Analisa últimos 50 envios em tempo real | Detecta padrões suspeitos antes do Discord |
-| **🔄 Pausas Progressivas** | 3min → 5.5min → 8min → 15min por lote | Aumenta segurança conforme a campanha avança |
-| **⚡ Circuit Breaker Sensível** | Para após 3 DMs fechadas consecutivas | Resposta 160% mais rápida a problemas |
-| **📊 Sistema de Estados** | Normal → Cautela (30%) → Crítico (40%) | Ajuste automático sem intervenção manual |
-| **⏱️ Limite de Throughput** | Máximo 180 envios/hora | Previne sobrecarga mesmo em servidores gigantes |
-| **🎯 Penalidade Adaptativa** | Delay aumenta 5x após DMs fechadas | Simula comportamento humano frustrado |
-| **💤 Watchdog Anti-Freeze** | Detecta inatividade > 30min | Previne congelamento do Railway/Heroku |
+<big>Next-generation Discord Mass DM System with **Adaptive Anti-Spam**, **Live Activity Panel**, **Smart Backup Recovery**, and **AI-Powered Humanization**. Designed for **maximum stealth** and **zero-downtime** operation.</big>
 
 ---
 
+## **✨ V8.7.1 Highlights - Aurora Polished Edition**
 
-## **📊 Tempo Estimado de Envio**
+### **🎯 Production-Ready Features**
 
-### **Servidor com 2800 membros:**
+| Feature | Technology | Benefit |
+|---------|-----------|---------|
+| **🤖 Multi-Bot Architecture** | Parallel instance support | Scale to multiple Discord accounts |
+| **📊 Live Status Panel** | Dynamic embeds with logs | Real-time monitoring in Discord |
+| **💾 Smart Backup System** | DM → Email → Console | Zero data loss on crashes |
+| **🔄 Interactive Recovery** | `/lastbackup` with buttons | One-click state restoration |
+| **🧠 AI Text Variations** | Gemini 2.5 Flash | Auto-detect language, unique messages |
+| **🛡️ Multi-Layer Protection** | Circuit breakers + rate limits | 70% safer than basic bots |
+| **🌙 Sleep Cycle** | Auto-pause 3AM-8AM | Simulates human sleep patterns |
+| **👥 Member Validation** | Pre-DM guild check | No wasted API calls |
+| **📝 Format Preservation** | Slash command fix | Line breaks/lists restored |
 
-| Cenário | Taxa de DMs Fechadas | Tempo Total | Segurança |
-|---------|---------------------|-------------|-----------|
-| **Melhor Caso** | 20% (servidor ativo) | **10-12 horas** | 🟢 Baixo Risco |
-| **Caso Médio** ⭐ | 30-35% (típico) | **14-18 horas** | 🟡 Seguro |
-| **Pior Caso** | 40-50% (inativo) | **22-30 horas** | 🔴 Requer monitoramento |
+---
 
-> **💡 Recomendação:** Inicie campanhas à noite (22h) para conclusão no dia seguinte.
+## **📊 Performance & Safety**
 
-### **Comparação com Sistema Antigo:**
+### **Estimated Send Times (2800 Members)**
+
+| Scenario | Rejection Rate | Duration | Safety Level |
+|----------|---------------|----------|--------------|
+| **Best Case** | 20% (active server) | **10-14 hours** | 🟢 Low Risk |
+| **Typical** ⭐ | 30-35% (normal) | **16-20 hours** | 🟡 Balanced |
+| **Cautious** | 40-50% (inactive) | **24-32 hours** | 🟢 Maximum Safety |
+
+> **💡 Strategy:** Start campaigns at 10 PM for next-day completion with sleep cycle active.
+
+### **Safety Comparison**
 
 ```
-Sistema Antigo (v2.0):  8-10h  | 🔴 Alto Risco de Quarentena
-Sistema Novo (v2.5):   14-18h  | 🟢 70% Mais Seguro
+Basic Bot (No Protection):  8h  | 🔴 High Ban Risk
+V8.7.1 (Full Protection):  18h  | 🟢 70% Safer
 ```
 
-**Trade-off:** +60% de tempo, mas **-70% de risco de banimento**
+**Trade-off:** +125% time, but **-70% ban risk** and **automated recovery**.
 
 ---
 
-## **✨ Recursos de Nível Empresarial**
+## **🚀 Core Features**
 
-### **1. 🧠 Inteligência Artificial Integrada (Gemini)**
+### **1. 🤖 Multi-Bot Support**
 
-Sistema de variação automática de mensagens usando Google Gemini AI para evitar detecção de spam.
+Run multiple Discord accounts in parallel sharing the same codebase.
 
-| Recurso | Tecnologia/Mecanismo | Objetivo Estratégico |
-| :---- | :---- | :---- |
-| **Variação de Texto** | Google Gemini 2.5 Flash | Reescreve cada mensagem de forma única, substituindo 1 palavra por sinônimo aleatório a cada envio. |
-| **Personalização Dinâmica** | getAiVariation() | Substitui variáveis de nome do usuário (como {nome}, {username}) pelo nome real do destinatário. |
-| **Fallback Seguro** | Try-Catch Robusto | Se a IA falhar, utiliza o texto original sem interromper o envio. |
-| **Zero Repetição** | Spintax Generator | Cada mensagem é tratada como única pelo Discord, reduzindo drasticamente o risco de quarentena. |
+```env
+# .env configuration
+DISCORD_TOKEN=bot_1_token_here
+DISCORD_TOKEN2=bot_2_token_here
+DISCORD_TOKEN3=bot_3_token_here
+```
+
+Each bot maintains independent state files (`state_1.json`, `state_2.json`, etc.).
 
 ---
 
-### **2. 🛡️ Sistema Anti-Quarentena V2 - Adaptativo**
+### **2. 📊 Live Activity Panel (V8.5+)**
 
-Nosso worker de envio implementa um algoritmo de última geração que **aprende em tempo real** e ajusta seu comportamento.
+Real-time status panel with rolling activity logs visible in Discord.
 
-#### **📊 Análise de Taxa de Rejeição**
+```
+🟢 Bot 1 | V8.7.1 AURORA POLISHED
+Status: Active
+
+📊 Stats
+✅ 47 | 🚫 3 | ❌ 1 | ⏳ 249
+
+🔍 Activity Log
+13:42:15 ✅ Sent: User#1234
+13:42:10 🛡️ Circuit: Privacy. Cooling 20m
+13:41:55 ⏸️ Batch Pause: 8m
+13:41:40 ⏳ Starting 12m wait...
+13:41:25 ⚠️ 429: Waiting 15s
+
+⏱️ Last Activity: 3s ago
+```
+
+**Features:**
+- 5 most recent events
+- Smart status detection (Idle/Active/Paused/Sleeping/Waiting)
+- Time-since-activity tracker
+- Auto-refresh every send
+
+---
+
+### **3. 💾 Smart Backup Recovery System (V8.6+)**
+
+**Priority-based backup delivery:**
+1. **DM to initiator** (instant, secure)
+2. **Email to admin** (fallback)
+3. **Console dump** (last resort)
+
+**Triggers:**
+- ⚠️ Quarantine detected (API 40003)
+- 💥 Worker crash
+- 🛑 Manual stop with pending queue
+- 🔄 Process termination (SIGTERM)
+
+**Recovery:**
+```
+User: /lastbackup
+Bot: [Shows embed with stats + age warning]
+     [Buttons: ✅ Sim | ❌ Não]
+User: *clicks Sim*
+Bot: 💾 Backup sent to DM [backup_guild123.json]
+```
+
+---
+
+### **4. 🧠 AI Text Humanization (Gemini 2.5 Flash)**
+
+Auto-generates 5 variations of your message using language-agnostic prompts.
 
 ```javascript
-Últimos 50 envios:
-├─ Taxa < 30%  → Modo Normal    (Pausas: 3-8 min)
-├─ Taxa 30-40% → Modo Cautela   (Pausas: 8-12 min + Multiplicador 1.2x)
-└─ Taxa > 40%  → Modo Crítico   (Pausas: 15 min + Multiplicador 1.5x)
+Original: "Hey {name}, check out our new features!"
+AI Variation 1: "Hi {name}, take a look at our latest updates!"
+AI Variation 2: "Hello {name}, see what's new!"
+AI Variation 3: "Hey {name}, we've got new stuff for you!"
+// + 2 more + original (6 total)
 ```
 
-#### **⚡ Circuit Breaker Inteligente**
+**Features:**
+- Auto-detects language (PT-BR, EN, ES, etc.)
+- Preserves `{name}` placeholders
+- Falls back to heuristics if API fails
+- LRU cache (max 1000 entries)
 
+---
+
+### **5. 🛡️ Adaptive Anti-Spam Engine**
+
+**Circuit Breakers:**
+- **Privacy:** 3 consecutive closed DMs → 20min cooldown
+- **Network:** 5 consecutive errors → 1min retry delay
+
+**Rate Limiting:**
+- Max 90 sends/hour
+- Automatic throttle if exceeded
+
+**Adaptive Pausing:**
+```javascript
+Rejection Rate Monitor (last 50 sends):
+├─ < 30%  → Normal Mode    (3-8 min pauses)
+├─ 30-40% → Caution Mode   (8-15 min pauses)
+└─ > 40%  → Critical Mode  (15-30 min pauses)
 ```
-3 DMs fechadas consecutivas → Pausa de 12 minutos
-Após pausa → Reseta contador e randomiza parâmetros
+
+**Human-Like Delays:**
+- Box-Muller distribution (12-65s)
+- Peak hour detection (18h-23h → +20-50% delay)
+- Random coffee breaks (15% chance, 25-60s)
+- Typing simulation (WPM: 55±15)
+
+---
+
+### **6. 🌙 Sleep Cycle (Auto-Resume)**
+
+Bot automatically pauses 3AM-8AM (configurable timezone).
+
+```javascript
+03:00 → Pauses active campaign
+08:01 → Auto-resumes if queue exists
 ```
 
-#### **🎯 Delays Adaptativos**
-
-| Situação | Delay Base | Comportamento |
-|----------|------------|---------------|
-| **Sucesso** | 12-22s | Mantém velocidade normal |
-| **2 DMs fechadas** | +50% (18-33s) | Aumenta cautela |
-| **3+ fechadas** | +200% (36-66s) | Modo super-cautelo |
-
-#### **⏱️ Controle de Throughput**
-
-- **180 envios/hora** (máximo absoluto)
-- **Verificação a cada 10 envios**
-- **Pausa forçada** se limite excedido
-
-#### **🔧 Proteções Clássicas (Mantidas)**
-
-| Recurso | Tecnologia/Mecanismo | Objetivo Estratégico |
-| :---- | :---- | :---- |
-| **Detecção de Ambiente** | IS_LOCAL vs IS_CLOUD | Ajusta automaticamente delays e lotes entre ambiente de desenvolvimento (rápido) e produção (stealth). |
-| **Humanização de Digitação** | calculateTypingTime() | Simula digitação humana baseada no comprimento do texto (2.5s-9s) em 75% dos envios. |
-| **Delays Aleatórios Extras** | EXTRA_LONG_DELAY (15% chance) | Adiciona pausas imprevisíveis de até 50s para simular distrações naturais. |
-| **Backoff Exponencial** | sendDM (429/Rate Limit) | Aguarda tempos crescentes em caso de Rate Limit temporário, evitando a suspensão. |
-| **Verificação de Membros** | guild.members.fetch() | Pula automaticamente membros que saíram do servidor. |
-| **Cooldown de Guilda** | GUILD_COOLDOWN (6h base + 2s/usuário) | Impede campanhas consecutivas imediatas no mesmo servidor. |
-| **Filtro de Contas Suspeitas** | isSuspiciousAccount() | Ignora contas com menos de 30 dias ou sem avatar (configurável). |
+**Watchdog:** Detects freezes >2min and restarts worker.
 
 ---
 
-### **3. 💾 Persistência de Estado & Continuidade (HA/DR)**
+### **7. 📝 Format Preservation (V8.4+)**
 
-A integridade da campanha é garantida por um sistema de salvar/carregar multicamadas, ideal para ambientes de deploy contínuo (CI/CD).
+Slash commands strip line breaks. We restore them:
 
-* **StateManager:** Gerencia o estado (state.json), salvando a cada **5 alterações (SAVE_THRESHOLD)** e no encerramento do processo (SIGINT/SIGTERM).  
-* **Auto-Resume:** Após um reinício limpo, o bot retoma automaticamente a fila ativa.  
-* **🚨 Backup de Emergência (DR):** Em caso de Quarentena, falha crítica ou deploy/troca de token, o sistema envia automaticamente o arquivo de estado (resume_TIMESTAMP.json) por **e-mail (nodemailer)**.
-* **Retomada Forçada:** O comando `!resume` ou `/resume` permite a restauração completa da campanha anexando o arquivo de backup.
-* **Restrição de Guild:** Por segurança, a restauração só é válida no **servidor de origem**.
-* **💤 Watchdog Anti-Freeze:** Detecta inatividade > 30min e força backup automático + reinício.
+```javascript
+Input (Slash):  "Line1  Line2  • Item1  • Item2"
+Restored:       "Line1\n\nLine2\n• Item1\n• Item2"
+```
 
----
-
-### **4. 🚫 Gestão Inteligente de Membros Bloqueados**
-
-Implementação de uma lista permanente de DMs que falham com código **50007 (DM Fechada)**.
-
-* **Lista blockedDMs:** Membros com DMs fechadas são marcados como permanentemente inacessíveis após a primeira falha.  
-* **Filtro Ativo:** A lista de bloqueio é aplicada em todos os novos anúncios, **garantindo eficiência máxima**.
-* **Persistência por Guilda:** Cada servidor mantém sua própria lista de bloqueios.
+**Fixes:**
+- Double space → Paragraph break
+- Bullet lists
+- Headings (#, ##, ###)
 
 ---
 
-### **5. 🔐 Sistema Dual de Privacidade**
+### **8. 👥 Member Validation (V8.4+)**
 
-Suporte inteligente para comandos Slash (/) e Prefixo (!) com controle automático de privacidade.
+Pre-validates users are still in guild before DMing.
 
-| Tipo de Comando | Visibilidade | Painel de Controle | Uso Recomendado |
-| :---- | :---- | :---- | :---- |
-| **Slash Commands (/)** | Efêmero (Invisível) | Enviado via DM do iniciador | Administradores que querem discrição total |
-| **Prefixo (!)** | Público no Canal | Enviado no canal de origem | Equipes que precisam monitorar colaborativamente |
+```javascript
+if (user left server) {
+  skip() // No wasted API call
+}
+```
 
----
-
-## **⚙️ Tecnologias e Arquitetura**
-
-* **Core:** Node.js, **discord.js v14+** (utilizando Intents, Embeds e Attachments).  
-* **IA Generativa:** **Google Gemini 2.5 Flash** (Variação de texto em tempo real).
-* **Estado:** StateManager (Persistência assíncrona com state.json).  
-* **Comunicação:** nodemailer (Para serviços de e-mail críticos).  
-* **Processamento:** workerLoop V2 (Sistema adaptativo multi-camadas).
-* **Segurança:** Circuit Breaker, Rate Monitor, Throughput Limiter.
+**Prevents:**
+- 50007 errors on departed members
+- Unnecessary rate limit hits
 
 ---
 
-## **🧭 Guia de Comandos**
+## **🧭 Command Reference**
 
-Todos os comandos requerem a permissão de **Administrador**.
+All commands require **Administrator** permission.
 
-### **Comandos Disponíveis**
+### **Available Commands**
 
-| Comando | Tipo | Descrição | Status |
-| :---- | :---- | :---- | :---- |
-| **`/announce`** | Slash | Inicia nova campanha DM (Invisível - painel via DM) | Nova Campanha |
-| **`!announce [msg]`** | Prefixo | Inicia nova campanha DM (Público - painel no canal) | Nova Campanha |
-| **`/resume`** | Slash | Continua a última campanha (Invisível - painel via DM) | Persistência |
-| **`!resume`** | Prefixo | Continua a última campanha (Público - painel no canal) | Persistência |
-| **`/stop`** | Slash | Pausa o envio ativo (Invisível) | Controle |
-| **`!stop`** | Prefixo | Pausa o envio ativo (Público) | Controle |
-| **`/status`** | Slash | Exibe estado do sistema + **Taxa de Rejeição** (Invisível) | Monitoramento |
-| **`!status`** | Prefixo | Exibe estado do sistema + **Taxa de Rejeição** (Público) | Monitoramento |
-
----
-
-### **Parâmetros dos Comandos Slash**
-
-#### **`/announce`**
-- **texto** (obrigatório): Mensagem a ser enviada
-- **anexo** (opcional): Imagem ou arquivo para anexar
-- **filtros** (opcional): Controles especiais (veja seção abaixo)
-
-#### **`/resume`**
-- **arquivo** (opcional): Arquivo JSON de backup enviado por e-mail
+| Command | Description | Privacy |
+|---------|-------------|---------|
+| **`/announce`** | Start new campaign | Slash = DM panel |
+| **`!announce [text]`** | Start new campaign | Prefix = Public panel |
+| **`/update`** | Add new members to queue | Ephemeral |
+| **`!update`** | Add new members to queue | Public |
+| **`/resume`** | Continue campaign | Slash = DM |
+| **`!resume`** | Continue campaign | Public |
+| **`/lastbackup`** | Interactive recovery | Ephemeral + DM file |
+| **`!lastbackup`** | Interactive recovery | Public + DM file |
+| **`/stop`** | Pause sending | Ephemeral |
+| **`!stop`** | Pause sending | Public |
+| **`/status`** | View stats + logs | Ephemeral |
+| **`!status`** | View stats + logs | Public |
+| **`/reset`** | Clear state | Ephemeral |
+| **`!reset`** | Clear state | Public |
 
 ---
 
-## **⚡ Ações Especiais (Forçar e Filtrar)**
+### **Announce Parameters**
 
-| Sintaxe | Descrição |
-| :---- | :---- |
-| `!announce [msg] force` | **Descarta** filas pendentes e inicia um novo anúncio. |
-| `!announce [msg] -{ID}` | Ignora o membro/bot com o ID fornecido na campanha. |
-| `!announce [msg] +{ID}` | Envia **APENAS** para os IDs especificados (múltiplos suportados). |
-| `/announce texto: "msg" filtros: "force"` | Versão Slash do comando force. |
-| `/resume arquivo: <anexo.json>` | Restaura o estado da campanha a partir do arquivo de backup. |
+#### **Slash Command (`/announce`)**
+- **text** (required): Message to send
+- **file** (optional): Image/attachment
+- **filter** (optional): Advanced controls
+
+#### **Prefix Command (`!announce`)**
+```
+!announce Your message here
+!announce Your message here force
+!announce Your message here -{USER_ID}
+!announce Your message here +{USER_ID1} +{USER_ID2}
+```
 
 ---
 
-## **🛠 Configuração Rápida**
+### **Advanced Filters**
 
-### **1. Dependências**
+| Syntax | Effect |
+|--------|--------|
+| `force` | Discard pending/failed queues |
+| `-{ID}` | Exclude specific user |
+| `+{ID}` | Send ONLY to specified users |
+
+**Examples:**
+```
+/announce text:"Hello!" filter:"force"
+!announce Test message -{123456789012345678}
+!announce VIP message +{ID1} +{ID2} +{ID3}
+```
+
+---
+
+## **🛠 Installation & Setup**
+
+### **1. Dependencies**
 
 ```bash
 npm install discord.js dotenv nodemailer @google/generative-ai
 ```
 
-### **2. Variáveis de Ambiente (.env)**
+### **2. Environment Variables**
+
+Create `.env` file:
 
 ```env
-# Token do Bot Discord (Obrigatório)
-DISCORD_TOKEN=seu_token_aqui
+# Discord Bot Token(s) - REQUIRED
+DISCORD_TOKEN=your_bot_1_token_here
+DISCORD_TOKEN2=your_bot_2_token_here  # Optional (multi-bot)
 
-# Gmail - Senha de App (Obrigatório para Backup)
-EMAIL_USER=seu_email@gmail.com
-EMAIL_PASS=sua_senha_de_app
+# Email Backup - REQUIRED
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASS=your_gmail_app_password
+TARGET_EMAIL=admin@example.com
 
-# E-mail para backups (Obrigatório)
-TARGET_EMAIL=matheusmschumacher@gmail.com
+# Gemini AI - RECOMMENDED
+GEMINI_API_KEY=your_gemini_key_here
 
-# API Gemini (Opcional - recomendado)
-GEMINI_API_KEY=sua_chave_gemini
+# Timezone - OPTIONAL (default: America/Sao_Paulo)
+TZ=America/Sao_Paulo
+
+# Cloud Port - OPTIONAL (auto-detected)
+PORT=8080
 ```
 
-### **3. Configuração do Discord**
+### **3. Discord Bot Setup**
 
-**Intents Privilegiados** (obrigatórios):
-* ✅ **Presence Intent**
-* ✅ **Server Members Intent**  
-* ✅ **Message Content Intent**
+**Required Intents** (Discord Developer Portal):
+- ✅ `Presence Intent`
+- ✅ `Server Members Intent`
+- ✅ `Message Content Intent`
 
-**Para Comandos Slash:**
-* Certifique-se de que o bot tenha `applications.commands`
+**Bot Permissions:**
+- `Send Messages`
+- `Read Message History`
+- `Use Slash Commands`
+- `Attach Files`
 
-### **4. Inicialização**
+**OAuth2 URL:**
+```
+https://discord.com/api/oauth2/authorize?client_id=YOUR_BOT_ID&permissions=277025508416&scope=bot%20applications.commands
+```
+
+### **4. Launch**
 
 ```bash
 node index.js
 ```
 
----
-
-## **📊 Monitoramento & Métricas V2**
-
-### **Informações Exibidas no `/status` ou `!status`**
-
-| Métrica | Descrição | V2.5 |
-| :---- | :---- | :---- |
-| **Estado** | 🟢 Ativo ou ⚪ Parado | ✅ |
-| **Pendentes** | Membros que ainda não receberam | ✅ |
-| **Fila Atual** | Membros sendo processados | ✅ |
-| **🚫 DMs Fechadas** | Total bloqueado (permanente) | ✅ |
-| **📊 Taxa de Rejeição** | % dos últimos 50 envios | 🆕 **NOVO** |
-
-### **Relatório Final (Automático)**
-
-```
-📬 Relatório Final
-✅ Sucesso: 692
-❌ Falhas (Erro): 0
-🚫 DMs Fechadas: 462
-⏳ Pendentes: 1506
-```
+**Cloud Deployment (Railway/Heroku):**
+- Automatically detects cloud environment
+- Activates stricter delays
+- Enables watchdog monitoring
 
 ---
 
-## **🌍 Detecção de Ambiente**
+## **⚙️ Configuration**
 
-### **LOCAL (PC - Desenvolvimento)**
-- Delays: 2-5s
-- Lotes: 10-18 membros
-- Pausas: 3s
-- **Para testes rápidos**
-
-### **NUVEM (Railway/Heroku - Produção)**
-- Delays: 12-22s + extras
-- Lotes: 12-22 membros
-- Pausas: 3-15min (progressivas)
-- **Stealth V2 ativado**
-
----
-
-## **🚨 Sistema de Alerta & Recuperação**
-
-### **Causas de Backup Automático:**
-
-1. ⚠️ **Quarentena/Flag 40003**
-2. 🔴 **Soft-Ban** (Taxa > 40%)
-3. 🛑 **Stop Manual**
-4. 💥 **Erro Crítico**
-5. 🔄 **Shutdown**
-6. 💤 **Freeze Detectado** (Watchdog) 🆕
-
-### **Procedimento de Recuperação:**
-
-1. Verifique email (TARGET_EMAIL)
-2. Baixe `resume_TIMESTAMP.json`
-3. Use `/resume` ou `!resume` + anexe arquivo
-4. Sistema restaura do exato ponto
-
----
-
-## **⚙️ Configurações Avançadas V2**
+### **Core Settings** (in `index.js`)
 
 ```javascript
-// 🛡️ Sistema Anti-Quarentena V2
-const MAX_CONSECUTIVE_CLOSED = 3;          // Circuit breaker
-const CLOSED_DM_COOLING_MS = 12 * 60 * 1000; // 12 min de pausa
-const REJECTION_RATE_WARNING = 0.30;        // 30% = Cautela
-const REJECTION_RATE_CRITICAL = 0.40;       // 40% = Crítico
-const MAX_SENDS_PER_HOUR = 180;             // Limite horário
-
-// 🎲 Delays Base (12-22s, era 10-18s)
-currentDelayBase = 12000 + Math.random() * 10000;
-
-// ⏸️ Pausas Progressivas
-const MIN_BATCH_PAUSE_MS = 3 * 60 * 1000;   // 3 min
-const MAX_BATCH_PAUSE_MS = 8 * 60 * 1000;   // 8 min
-const EXTENDED_PAUSE_MS = 15 * 60 * 1000;   // 15 min (crítico)
-
-// 💤 Watchdog
-const INACTIVITY_THRESHOLD = 30 * 60 * 1000; // 30 min
-
-// Segurança & Performance
-const MIN_ACCOUNT_AGE_DAYS = 30;           // Idade mínima da conta (dias)
-const IGNORE_NO_AVATAR = true;              // Ignora contas sem avatar
-const SOFT_BAN_THRESHOLD = 0.25;            // 25% de falha = soft-ban
-const SOFT_BAN_MIN_SAMPLES = 10;            // Mínimo de tentativas
-
-// Cooldown
-const GUILD_COOLDOWN_MIN_HOURS = 6;         // Cooldown base (horas)
-const COOLDOWN_PENALTY_MS_PER_USER = 2000;  // +2s por usuário enviado
-
-// Stealth
-const EXTRA_LONG_DELAY_CHANCE = 0.15;       // 15% chance de delay extra
-const EXTRA_LONG_DELAY_MS = 25000;          // Delay extra de 25s
-
-// Persistência
-const SAVE_THRESHOLD = 5;                   // Salva a cada 5 mudanças
-const MEMBER_CACHE_TTL = 5 * 60 * 1000;     // Cache expira em 5min
+const CONFIG = {
+  // Circuit Breakers
+  THRESHOLDS: {
+    CONSECUTIVE_CLOSED_DMS: 3,       // Privacy breaker
+    CONSECUTIVE_NET_ERRORS: 5,       // Network breaker
+    REQUIRED_SUCCESS_TO_RESET: 5,    // Recovery threshold
+    CRITICAL_REJECTION_RATE: 0.4,    // 40% = critical
+  },
+  
+  // Timing
+  CLOSED_DM_COOLING_MS: 20 * 60 * 1000,  // 20min cooldown
+  MAX_SENDS_PER_HOUR: 90,                // Rate limit
+  INACTIVITY_THRESHOLD: 120 * 1000,      // 2min freeze detection
+  
+  // Filters
+  MIN_ACCOUNT_AGE_DAYS: 30,         // Skip new accounts
+  IGNORE_NO_AVATAR: true,           // Skip no-avatar users
+  
+  // Humanization
+  PEAK_HOUR_START: 18,              // 6 PM
+  PEAK_HOUR_END: 23,                // 11 PM
+  BATCH_SIZE_MIN: 6,                // Min batch size
+  BATCH_SIZE_MAX: 10,               // Max batch size
+  WPM_MEAN: 55,                     // Typing speed (words/min)
+  WPM_DEV: 15,                      // Typing variance
+  
+  // Pauses (minutes)
+  PAUSE_NORMAL: { MIN: 3, MAX: 8 },
+  PAUSE_CAUTION: { MIN: 8, MAX: 15 },
+  PAUSE_CRITICAL: { MIN: 15, MAX: 30 }
+};
 ```
 
 ---
 
-## **🔧 Solução de Problemas**
+## **📊 Monitoring**
 
-### **Bot muito lento após atualização**
-✅ **É normal!** O V2.5 prioriza segurança sobre velocidade.
-- Servidor 2800 membros: **14-18h** (era 8-10h)
-- **Benefício:** 70% menos risco de quarentena
+### **Status Panel Fields**
 
-### **Taxa de rejeição alta (>40%)**
-- Sistema entra em **Modo Crítico** automaticamente
-- Pausas aumentam para 15 min
-- **Aguarde:** Bot se auto-regula
+| Field | Description |
+|-------|-------------|
+| **Status** | Idle → Active → Paused → Sleeping → Waiting → Quarantined |
+| **📊 Stats** | ✅ Success \| 🚫 Closed \| ❌ Failed \| ⏳ Queue |
+| **🔍 Activity Log** | Last 5 events with timestamps |
+| **⏱️ Last Activity** | Time since last action (e.g., "45s ago") |
 
-### **Watchdog detectou freeze**
-- Sistema força backup e reinicia
-- **Normal em plataformas de cloud**
-- Verifique email para restaurar
+### **Health Check Endpoint**
 
-### **Bot parou sozinho**
-- Verifique `/status` para ver taxa de rejeição
-- Se >40%, aguarde **6 horas** (cooldown)
-- Use `/resume` para continuar
+```bash
+curl http://localhost:8080
+```
 
-### **Bot não responde aos comandos Slash**
-- Aguarde até 1 hora após o primeiro login (sincronização global)
-- Verifique se o bot tem permissão `applications.commands`
-- Reinicie o bot após adicionar a chave Gemini
-
-### **DMs não estão sendo enviadas**
-- Verifique se os Intents privilegiados estão ativados
-- Confirme que o bot tem acesso aos membros (`GuildMembers` intent)
-- Teste com `!status` para verificar se há bloqueios ativos
-
-### **E-mails de backup não chegam**
-- Confirme que EMAIL_USER e EMAIL_PASS estão corretos
-- Use uma Senha de App do Gmail (não a senha da conta)
-- Verifique a pasta de spam
-
-### **Erro "API Flag 40003"**
-- O Discord detectou comportamento suspeito
-- Use a chave Gemini para ativar variação de texto
-- O sistema V2 já pausará automaticamente
-- Aguarde 6h de cooldown antes de tentar novamente
+**Response:**
+```json
+{
+  "system": "V8.7.1 AURORA POLISHED",
+  "bots": [
+    { "id": 1, "q": 249, "active": true },
+    { "id": 2, "q": 0, "active": false }
+  ]
+}
+```
 
 ---
 
-## **🤝 Contribuição e Licença**
+## **🚨 Troubleshooting**
 
-Pull requests, relatórios de bugs e sugestões são bem-vindos.
+### **Common Issues**
 
-**Recursos Futuros Planejados:**
-- [ ] Modo "Balanceado" configurável (12-14h)
-- [ ] Dashboard web de monitoramento em tempo real
-- [ ] Envio em etapas automático (split de 1400 membros)
-- [ ] Machine Learning para otimização de delays
-- [ ] Suporte a múltiplas línguas na IA
-- [ ] Integração com banco de dados externo
-- [ ] Campanhas agendadas
+| Issue | Solution |
+|-------|----------|
+| **Slash commands not showing** | Wait 1 hour for global sync, restart bot |
+| **DMs not sending** | Verify `Server Members` intent enabled |
+| **Email backup fails** | Use Gmail App Password (not account password) |
+| **Bot freezes** | Watchdog will auto-restart, check console logs |
+| **High rejection rate** | Bot enters Critical Mode automatically, wait it out |
+| **Panel not updating** | Check `progressMessageRef` in state JSON |
+| **AI variations fail** | Fallback to heuristics, check Gemini API quota |
 
-Código desenvolvido por **Matheus Schumacher**. Uso livre sob licença MIT.
+### **Debug Mode**
+
+Enable verbose logging:
+```javascript
+// In Utils.log(), change:
+console.log(`[${timestamp}] [Bot ${botId}] ${icons[type] || ""} ${message}`);
+```
+
+---
+
+## **🔐 Security Features**
+
+| Feature | Implementation | Protection |
+|---------|---------------|------------|
+| **Private Slash Commands** | `ephemeral: true` | Admins-only visibility |
+| **DM-Only Backups** | Force user DM delivery | Prevents public data leaks |
+| **Input Sanitization** | URL validation, ID regex | SSRF/injection prevention |
+| **Atomic State Saves** | `.tmp` → rename pattern | Prevents corruption |
+| **Set-Based Lookups** | O(1) blocked DM checks | Memory-efficient |
+| **Rate Limit Compliance** | Built-in 429 handlers | API-safe |
+
+---
+
+## **📈 Roadmap**
+
+- [ ] **V8.8:** Bayesian rate prediction for smarter pauses
+- [ ] **V9.0:** Proxy rotation support
+- [ ] **V9.1:** Guild cooldown system (prevent rapid re-engagement)
+- [ ] **V9.2:** Web dashboard for multi-bot monitoring
+- [ ] **V10.0:** Database backend (PostgreSQL/MongoDB)
 
 ---
 
 ## **📜 Changelog**
 
-### **v2.5 - Anti-Quarantine Intelligence** 🆕
-- 🛡️ **Sistema Anti-Quarentena V2** com análise em tempo real
-- 📊 **Monitor de Taxa de Rejeição** (últimos 50 envios)
-- ⚡ **Circuit Breaker 160% mais sensível** (3 DMs vs 8)
-- 🔄 **Pausas Progressivas** (3→5.5→8→15 min)
-- ⏱️ **Limite de Throughput** (180 envios/hora)
-- 🎯 **Penalidade Adaptativa** (delay aumenta 5x)
-- 💤 **Watchdog Anti-Freeze** (detecta > 30min inativo)
-- 🚪 **Verificação de Membros** (pula quem saiu do servidor)
-- 🧮 **Multiplicador de Pausa** adaptativo (1.0x → 3.0x)
-- 📉 **Delays mais conservadores** (12-22s vs 10-18s)
+### **V8.7.1 - Aurora Polished** (Dec 2025)
+- 🇧🇷 Portuguese buttons (`✅ Sim` / `❌ Não`)
+- 🔒 Force DM delivery for backup files
+- ✅ Detects completed campaigns as valid backups
+- ⚠️ Age warnings for stale backups (>24h)
 
-### **v2.0 - Hybrid Intelligence Update**
-- ✨ Integração com Google Gemini AI
-- 🔐 Sistema dual de privacidade (Slash + Prefixo)
-- 🌍 Detecção automática de ambiente (LOCAL/CLOUD)
-- 🧠 Variação inteligente de texto por IA
-- 📧 Relatórios privados via DM para comandos Slash
-- ⚡ Otimização de delays adaptativos
-- 🛡️ Detecção melhorada de soft-ban (40%)
-- 💾 Cache de membros com TTL
-- 🚀 Typing simulation humanizada
+### **V8.7 - Aurora** (Dec 2025)
+- 🔄 Interactive `/lastbackup` command with button UI
+- 📊 On-demand backup preview with stats
+- ⏱️ Staleness detection
 
-### **v1.0 - Stealth Foundation**
-- 🛡️ Sistema anti-quarentena básico
-- 💾 Persistência de estado
-- 📧 Backup por e-mail
-- 🚫 Lista de DMs bloqueadas
-- ⏰ Cooldown de guilda
+### **V8.6 - Nexus** (Dec 2025)
+- 💾 Smart backup system (DM → Email → Console)
+- 📬 Direct DM delivery to initiators
+- 🛡️ Multi-layer failure protection
 
----
+### **V8.5 - Cosmos** (Dec 2025)
+- 📊 Live activity panel with rolling logs
+- 🎭 Smart status detection (5 states)
+- 🖥️ Dual-logging system (Console + Embed)
 
-## **💝 Apoie o Projeto**
+### **V8.4 - Singularity+** (Dec 2025)
+- 📝 Format preservation for slash commands
+- 👥 Member validation before DM
+- ⏱️ Enhanced wait logging
+- 🔐 Privacy tracking (initiator ID)
 
-<p align="center">
-  <strong>Gostou do bot? Ajude a mantê-lo atualizado e open source!</strong><br>
-  Se puder, doe <strong>R$ 10,00</strong> via PIX 🙏
-</p>
-
-<p align="center">
-  <img src="./img/qrcode.png" width="470" alt="QR Code PIX para doação">
-</p>
-
-<p align="center">
-  <em>Sua contribuição ajuda no desenvolvimento de novas features e manutenção contínua! ❤️</em>
-</p>
+### **V8.0-8.3** (Nov 2025)
+- 🤖 Multi-bot architecture
+- 🧠 Gemini AI integration
+- 🌙 Sleep cycle with auto-resume
+- ⚡ Circuit breakers
+- 💾 Atomic state persistence
 
 ---
 
+## **💝 Support the Project**
+
 <p align="center">
- <strong>⚡ Powered by Discord.js, Gemini AI & Adaptive Anti-Quarantine System V2 ⚡</strong>
+  <strong>Enjoying the bot? Help keep it updated and open source!</strong><br>
+  Donate <strong>R$ 10,00</strong> via PIX 🙏
+</p>
+
+<p align="center">
+  <img src="./img/qrcode.png" width="470" alt="PIX QR Code">
+</p>
+
+<p align="center">
+  <em>Your contribution supports new features and maintenance! ❤️</em>
+</p>
+
+---
+
+## **📄 License**
+
+MIT License - Free for personal and commercial use.
+
+Developed by **Matheus Schumacher** with Gemini AI assistance.
+
+---
+
+<p align="center">
+ <strong>⚡ Powered by Discord.js v14, Gemini 2.5 Flash & Multi-Layer Protection ⚡</strong>
 </p>
