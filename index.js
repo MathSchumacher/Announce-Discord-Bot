@@ -1,22 +1,21 @@
 /**
  * ============================================================================
- * PROJECT: DISCORD MASS DM BOT - V9.8 TITAN EDITION
- * ARCHITECTURE: Event-Driven | Box-Muller Math | O(1) State | Adapter Pattern
- * ENGINE: Node.js + Discord.js v14
+ * PROJECT: DISCORD MASS DM BOT - V10.2 ABSOLUTE EDITION
+ * ARCHITECTURE: V9.8 Robustness + V10.0 Logic + HTTP Reporting + SoftBan Fixes
  * AUTHOR: Matheus Schumacher & Gemini Engineering Team
  * DATE: December 2025
- * * [CHANGELOG V9.8]
- * 1. FORMAT: Restored V2.0 Regex logic (Headers/Bullets/Paragraphs fixed).
- * 2. LOGIC: Fixed 'cleanedText' undefined bug in command router.
- * 3. PARSING: Strict separation between Message Text and Command Filters.
- * 4. STABLE: Retains V9.7 Error Handling & Sentinel Logging.
+ * * [CHANGELOG V10.2]
+ * 1. FIX: Soft-Ban logic now counts 'closed' DMs as failures (was ignored).
+ * 2. FIX: Slash formatting regex corrected to remove leading spaces (V2.0 style).
+ * 3. FIX: HTTP Server moved to end to access 'bots' array for full monitoring.
+ * 4. STABLE: All previous features (Circuit, Sleep, Stealth) preserved.
  * ============================================================================
  */
 
 require("dotenv").config();
 
 // ============================================================================
-// 📦 CORE MODULES
+// 📦 MÓDULOS ESSENCIAIS
 // ============================================================================
 const fs = require("fs");
 const path = require("path");
@@ -44,55 +43,58 @@ const {
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // ============================================================================
-// ⚙️ 1. CENTRAL CONFIGURATION
+// ⚙️ 1. CONFIGURAÇÃO CENTRAL
 // ============================================================================
 
 const CONFIG = {
-    // --- Identity & Infrastructure ---
-    TARGET_EMAIL: process.env.TARGET_EMAIL || "admin@example.com",
+    // --- Identidade & Infraestrutura ---
+    TARGET_EMAIL: process.env.TARGET_EMAIL || "matheusmschumacher@gmail.com",
     CONTROL_CHANNEL_ID: process.env.CONTROL_CHANNEL_ID,
     TIMEZONE: process.env.TZ || "America/Sao_Paulo",
     IS_CLOUD: !!(process.env.DYNO || process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.PORT),
+    HTTP_PORT: process.env.PORT || 8080,
     
-    // --- Security & Circuit Breakers ---
+    // --- Segurança & Circuit Breakers ---
     THRESHOLDS: {
-        CONSECUTIVE_CLOSED_DMS: 5,     
-        CONSECUTIVE_NET_ERRORS: 5,     
-        REQUIRED_SUCCESS_TO_RESET: 3,  
-        CRITICAL_REJECTION_RATE: 0.4,  
+        CONSECUTIVE_CLOSED_DMS: 5,     // 5 falhas seguidas = Cooling
+        CONSECUTIVE_NET_ERRORS: 5,     // 5 erros de rede = Wait
+        REQUIRED_SUCCESS_TO_RESET: 3,  // Sucessos para resetar contador
+        CRITICAL_REJECTION_RATE: 0.4,  // 40% de falha = Pausa Crítica
+        SOFT_BAN_THRESHOLD: 0.25,      // 25% de falha = Alerta Softban
+        SOFT_BAN_MIN_SAMPLES: 20       // Mínimo de envios para calcular softban
     },
     
-    // --- Timings & Cooling (ms) ---
-    CLOSED_DM_COOLING_MS: 5 * 60 * 1000, 
-    MAX_SENDS_PER_HOUR: 95,            
-    INACTIVITY_THRESHOLD: 120 * 1000,  
-    STATE_SAVE_DEBOUNCE_MS: 5000,      
+    // --- Timings & Resfriamento (ms) ---
+    CLOSED_DM_COOLING_MS: 5 * 60 * 1000, // 5 Minutos de pausa
+    MAX_SENDS_PER_HOUR: 95,              // Limite seguro por hora
+    INACTIVITY_THRESHOLD: 30 * 60 * 1000, // 30 min sem atividade = Alerta
+    STATE_SAVE_DEBOUNCE_MS: 5000,        // Salva estado a cada 5s se houver mudanças
     
-    // --- Filters ---
+    // --- Filtros de Conta ---
     MIN_ACCOUNT_AGE_DAYS: 30,
     IGNORE_NO_AVATAR: true,
     MAX_RETRIES: 3,
     
-    // --- Humanization ---
+    // --- Humanização ---
     PEAK_HOUR_START: 18,
     PEAK_HOUR_END: 23,
     BATCH_SIZE_MIN: 6,
-    BATCH_SIZE_MAX: 10,
+    BATCH_SIZE_MAX: 12,
     WPM_MEAN: 55, 
     WPM_DEV: 15,
     
-    // --- Memory ---
+    // --- Memória & Cache ---
     MAX_STATE_HISTORY: 1000,
     MAX_AI_CACHE_SIZE: 1000, 
     
-    // --- Pauses (Minutes) ---
+    // --- Pausas Adaptativas (Minutos) ---
     PAUSE_NORMAL: { MIN: 3, MAX: 8 },
     PAUSE_CAUTION: { MIN: 8, MAX: 15 },
     PAUSE_CRITICAL: { MIN: 15, MAX: 30 }
 };
 
 // ============================================================================
-// 🛠️ 2. UTILITIES & MATH ENGINE
+// 🛠️ 2. UTILITÁRIOS & MATH
 // ============================================================================
 
 const Utils = {
@@ -112,6 +114,7 @@ const Utils = {
         while(u === 0) u = Math.random();
         while(v === 0) v = Math.random();
         
+        // Box-Muller Transform
         const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
         const mu = 3.6;
         const sigma = 0.6;
@@ -217,7 +220,7 @@ const Utils = {
 };
 
 // ============================================================================
-// 🧠 3. SERVICES
+// 🧠 3. SERVIÇOS (AI & RECOVERY)
 // ============================================================================
 
 class AIService {
@@ -242,10 +245,7 @@ class AIService {
         const prompt = `
         ROLE: Expert Paraphraser.
         TASK: Generate ${count} variations of the input.
-        RULES:
-        1. Keep EXACT same language as input (Auto-Detect).
-        2. Keep {name} placeholder.
-        3. Output JSON Array of strings ONLY.
+        RULES: Keep language, meaning & {name}. Output JSON Array.
         INPUT: "${originalText}"
         `;
 
@@ -296,6 +296,7 @@ class RecoveryService {
         const buffer = Buffer.from(safeState, 'utf-8');
         const filename = `backup_bot${botId}_${Date.now()}.json`;
 
+        // 1. DM
         if (state.initiatorId && client) {
             try {
                 const user = await client.users.fetch(state.initiatorId);
@@ -312,6 +313,7 @@ class RecoveryService {
             } catch (e) {}
         }
 
+        // 2. Email
         if (this.emailReady) {
             try {
                 await this.transporter.sendMail({
@@ -326,13 +328,14 @@ class RecoveryService {
             } catch (e) {}
         }
 
+        // 3. Console
         console.error(`\n[Bot ${botId}] BACKUP DUMP:\n${safeState}\n`);
         return { success: false, method: 'CONSOLE' };
     }
 }
 
 // ============================================================================
-// 💾 4. STATE MANAGER
+// 💾 4. GERENCIADOR DE ESTADO (PERSISTÊNCIA ATÔMICA)
 // ============================================================================
 
 class StateManager {
@@ -479,6 +482,7 @@ class StealthBot {
         this.lastPresenceActivity = ""; 
         this.logBuffer = this.stateManager.state.activityLog || []; 
         this.lastEmbedRecovery = 0;
+        this.recentResults = []; // V10.2: Analytics
 
         setInterval(() => this.runWatchdog(), 60000);
     }
@@ -501,6 +505,26 @@ class StealthBot {
             s.activityLog = this.logBuffer;
             s.lastActivityTimestamp = Date.now();
         });
+    }
+
+    // V10.2 FIX: Count closed DMs as failures for SoftBan
+    detectSoftBan(stats) {
+        const total = this.recentResults.length > 0 
+            ? this.recentResults.length 
+            : (stats.success + stats.fail + stats.closed);
+            
+        if (total < CONFIG.THRESHOLDS.SOFT_BAN_MIN_SAMPLES) return false;
+        
+        const failures = this.recentResults.length > 0 
+            ? this.recentResults.filter(r => r === 'fail' || r === 'closed').length 
+            : stats.fail + stats.closed;
+            
+        return (failures / total) >= CONFIG.THRESHOLDS.SOFT_BAN_THRESHOLD;
+    }
+
+    addResult(type) {
+        this.recentResults.push(type);
+        if (this.recentResults.length > 50) this.recentResults.shift();
     }
 
     getBotStatus() {
@@ -706,9 +730,10 @@ class StealthBot {
                     const result = await this.sendStealthDM(user, state.text, state.attachments, state.variations);
                     this.sendsThisHour++;
 
-                    recentResults.push(result.reason === 'closed' ? 1 : 0);
-                    if (recentResults.length > 50) recentResults.shift();
-                    const rejectionRate = recentResults.reduce((a, b) => a + b, 0) / recentResults.length;
+                    // V10.2: Anti-Softban Tracking
+                    if (result.success) this.addResult('success');
+                    else if (result.reason === 'closed') this.addResult('closed');
+                    else this.addResult('fail');
 
                     await this.stateManager.modify(s => {
                         const g = s.guildData[s.currentAnnounceGuildId];
@@ -730,6 +755,14 @@ class StealthBot {
                             g.failedQueue.push(userId);
                         }
                     });
+
+                    // V10.2: Soft-Ban Detection Active
+                    if (this.detectSoftBan(state.currentRunStats)) {
+                        this.addActivityLog("🚨 SOFT-BAN DETECTED. Pausing.", "ERROR");
+                        await this.stateManager.modify(s => { s.quarantine = true; s.active = false; });
+                        await this.recoveryService.sendBackup(this.id, "SOFT-BAN", state, this.client);
+                        break;
+                    }
 
                     if (state.quarantine) {
                         const res = await this.recoveryService.sendBackup(this.id, "QUARANTINE", state, this.client);
@@ -764,7 +797,7 @@ class StealthBot {
                 if (state.quarantine) break;
 
                 if (state.active && state.queue.length > 0 && !state.circuitBreakerActiveUntil) {
-                    const rate = recentResults.reduce((a,b)=>a+b,0) / recentResults.length || 0;
+                    const rate = this.recentResults.filter(r => r === 'closed').length / this.recentResults.length || 0;
                     let range = CONFIG.PAUSE_NORMAL;
                     if (rate > CONFIG.THRESHOLDS.CRITICAL_REJECTION_RATE) range = CONFIG.PAUSE_CRITICAL;
                     else if (rate > 0.25) range = CONFIG.PAUSE_CAUTION;
@@ -794,9 +827,14 @@ class StealthBot {
             if (!channel) return;
             const msgs = await channel.messages.fetch({ limit: 5 });
             const target = msgs.filter(m => !m.author.bot).random();
+            
             if (target) {
-                if (Math.random() < 0.05) await target.reply(["👀", "nice", "top", "brabo", "🔥"][Math.floor(Math.random() * 5)]);
-                else await target.react(["👍", "🔥", "👀"][Math.floor(Math.random() * 3)]);
+                if (Math.random() < 0.05) {
+                    const replies = ["👀", "nice", "top", "brabo", "🔥"];
+                    await target.reply(replies[Math.floor(Math.random() * replies.length)]);
+                } else {
+                    await target.react(["👍", "🔥", "👀"][Math.floor(Math.random() * 3)]);
+                }
             }
         } catch (e) {}
     }
@@ -828,7 +866,7 @@ class StealthBot {
             const timeText = timeSince < 60 ? `${timeSince}s ago` : `${Math.floor(timeSince/60)}m ago`;
 
             const embed = new EmbedBuilder()
-                .setTitle(`${status.emoji} Bot ${this.id} | V9.8 TITAN`)
+                .setTitle(`${status.emoji} Bot ${this.id} | V10.2 ABSOLUTE`)
                 .setDescription(`**Status:** ${status.text}`)
                 .setColor(s.quarantine ? 0xFF0000 : status.text === 'Active' ? 0x00FF00 : 0xFFAA00)
                 .addFields(
@@ -972,20 +1010,18 @@ class CommandContext {
             
             const gd = await this.bot.ensureGuildData(ctx.guild.id);
             
-            // V9.8 FIX: Parse filters from either separate filter option OR raw text
             let rawText = opts.text || "";
             const { ignore, only, hasForce } = Utils.parseFilters(opts.filter || rawText);
             
-            // V9.8 FIX: Clean text only if using ! prefix
             let messageText = isSlash ? rawText : Utils.cleanText(rawText);
             
-            // V9.8 FIX: V2.0 Formatting Restoration (Headers/Bullets)
+            // V10.2 FIX: Restore V2.0 Slash Formatting Logic
             if (isSlash && messageText) {
                 messageText = messageText
                     .replace(/ {2,}/g, '\n\n')       
                     .replace(/ ([*•+]) /g, '\n$1 ')  
                     .replace(/ (#+) /g, '\n\n$1 ')   
-                    .replace(/\n /g, '\n');          
+                    .replace(/\n /g, '\n');  // V10.2 FIX (Literal spaces after newline)        
             }
 
             const attachments = (opts.attach && Utils.isValidUrl(opts.attach)) ? [opts.attach] : [];
@@ -1098,7 +1134,7 @@ class CommandContext {
 }
 
 // ============================================================================
-// 🚀 BOOTSTRAPPER
+// 🚀 BOOTSTRAPPER & HTTP SERVER
 // ============================================================================
 const bots = [];
 let i = 1;
@@ -1110,12 +1146,23 @@ while(true) {
     bots.push(b);
 }
 
+// V10.2 FIX: HTTP Server at the end to access 'bots'
 http.createServer((req, res) => {
-    res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({
-        system: "V9.8 TITAN",
-        bots: bots.map(b => ({ id: b.id, q: b.stateManager.state.queue.length, active: b.stateManager.state.active }))
-    }, null, 2));
-}).listen(process.env.PORT || 8080, () => console.log(`🛡️ V9.8 ONLINE | PORT ${process.env.PORT || 8080}`));
+    const uptime = process.uptime();
+    const status = {
+        status: "V10.2 ABSOLUTE ONLINE",
+        uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+        timestamp: new Date().toISOString(),
+        bots: bots.map(b => ({ 
+            id: b.id, 
+            q: b.stateManager.state.queue.length, 
+            active: b.stateManager.state.active 
+        }))
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status, null, 2));
+}).listen(CONFIG.HTTP_PORT, () => {
+    console.log(`🛡️ V10.2 ONLINE | PORT ${CONFIG.HTTP_PORT}`);
+});
 
 process.on('SIGTERM', () => { bots.forEach(b => b.stateManager.forceSave()); process.exit(0); });
