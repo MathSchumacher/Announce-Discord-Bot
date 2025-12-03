@@ -1,14 +1,15 @@
 /**
  * ============================================================================
  * PROJECT: DISCORD MASS DM BOT - V10.2 ABSOLUTE EDITION
- * ARCHITECTURE: V9.8 Robustness + V10.0 Logic + HTTP Reporting + SoftBan Fixes
+ * ARCHITECTURE: V10 Robustness + V2.0 Logic Logic (Hybrid)
  * AUTHOR: Matheus Schumacher & Gemini Engineering Team
  * DATE: December 2025
  * * [CHANGELOG V10.2]
- * 1. FIX: Soft-Ban logic now counts 'closed' DMs as failures (was ignored).
- * 2. FIX: Slash formatting regex corrected to remove leading spaces (V2.0 style).
- * 3. FIX: HTTP Server moved to end to access 'bots' array for full monitoring.
- * 4. STABLE: All previous features (Circuit, Sleep, Stealth) preserved.
+ * 1. REVERT: Command handling logic reverted to V2.0 style (Direct Slice).
+ * 2. FIX: Slash formatting Regex restored exactly as requested.
+ * 3. FIX: Soft-Ban logic now counts 'closed' DMs properly.
+ * 4. FIX: HTTP Server moved to end to properly report bot status.
+ * 5. ROBUST: Circuit Breakers, Sleep Cycle, and Anti-Freeze retained.
  * ============================================================================
  */
 
@@ -173,24 +174,24 @@ const Utils = {
         return noAvatar || tooNew;
     },
 
-    parseFilters: (text) => {
+    // V10.2: Restored Exact V2.0 Logic
+    parseSelectors: (text) => {
         const ignore = new Set();
         const only = new Set();
-        const regex = /([+-])\{(\d{17,20})\}/g;
-        let match;
-        while ((match = regex.exec(text))) {
-            if (match[1] === '-') ignore.add(match[2]);
-            if (match[1] === '+') only.add(match[2]);
+        const regex = /([+-])\{(\d{5,30})\}/g;
+        let m;
+        while ((m = regex.exec(text))) {
+            if (m[1] === '-') ignore.add(m[2]);
+            if (m[1] === '+') only.add(m[2]);
         }
-        const hasForce = /\bforce\b/i.test(text);
-        return { ignore, only, hasForce };
-    },
-
-    cleanText: (text) => {
-        return text
-            .replace(/([+-])\{(\d{17,20})\}/g, '')
-            .replace(/\bforce\b/i, '')
-            .trim();
+        const cleaned = text.replace(regex, "").trim();
+        const hasForce = /\bforce\b/i.test(cleaned);
+        return { 
+            cleaned: hasForce ? cleaned.replace(/\bforce\b/i, '').trim() : cleaned, 
+            ignore, 
+            only, 
+            hasForce 
+        };
     },
 
     fetchJsonFromUrl: (url) => {
@@ -903,9 +904,9 @@ class StealthBot {
             this.startPresenceLoop();
             this.startSleepCycle();
             
-            const cmdAdapter = new CommandContext(this);
-            this.client.on('interactionCreate', i => cmdAdapter.handleInteraction(i));
-            this.client.on('messageCreate', m => cmdAdapter.handleMessage(m));
+            // V10.2: Direct Handlers (No more Router abstraction issues)
+            this.client.on('interactionCreate', i => this.handleInteraction(i));
+            this.client.on('messageCreate', m => this.handleMessage(m));
 
             const cmds = [
                 new SlashCommandBuilder().setName('announce').setDescription('Start').addStringOption(o=>o.setName('text').setDescription('Msg').setRequired(true)).addAttachmentOption(o=>o.setName('file').setDescription('Img')).addStringOption(o=>o.setName('filter').setDescription('Filter')),
@@ -921,6 +922,184 @@ class StealthBot {
             if (this.stateManager.state.active) this.startWorker();
         });
         await this.client.login(this.token);
+    }
+
+    // --- Command Handling (V2.0 Style - Direct Methods) ---
+
+    async handleInteraction(i) {
+        if (!i.isChatInputCommand() || !i.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
+        const reply = async (msg) => (i.deferred || i.replied) ? i.editReply(msg) : i.reply(msg);
+        
+        await i.deferReply({ flags: MessageFlags.Ephemeral });
+        
+        try {
+            if (i.commandName === 'announce') {
+                const text = i.options.getString('text');
+                const attach = i.options.getAttachment('file')?.url;
+                const filter = i.options.getString('filter');
+                await this.execAnnounce(i, text, attach, filter);
+            } else if (i.commandName === 'resume') {
+                const file = i.options.getAttachment('file')?.url;
+                await this.execResume(i, file);
+            } else if (i.commandName === 'stop') await this.execStop(i);
+            else if (i.commandName === 'status') await this.execStatus(i);
+            else if (i.commandName === 'reset') await this.execReset(i);
+            else if (i.commandName === 'update') await this.execUpdate(i);
+            else if (i.commandName === 'lastbackup') await this.execLastBackup(i);
+        } catch (e) {
+            console.error(`Cmd Error: ${e.message}`);
+            i.editReply(`❌ Error: ${e.message}`).catch(()=>{});
+        }
+    }
+
+    async handleMessage(m) {
+        if (m.author.bot || !m.guild) return; // Check Guild!
+        if (!m.content || !m.content.startsWith('!')) return;
+        
+        // V10.2: Strict Member Fetch
+        let member = m.member;
+        if (!member) {
+            try { member = await m.guild.members.fetch(m.author.id); } catch(e) { return; }
+        }
+        if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
+
+        const args = m.content.slice(1).trim().split(/ +/);
+        const cmd = args.shift().toLowerCase();
+        
+        // V10.2: Direct Slice (V2.0 Style)
+        const fullContent = m.content.slice(cmd.length + 1).trim();
+        const attach = m.attachments.first()?.url;
+
+        try {
+            if (cmd === 'announce') await this.execAnnounce(m, fullContent, attach, fullContent);
+            else if (cmd === 'resume') await this.execResume(m, attach);
+            else if (cmd === 'stop') await this.execStop(m);
+            else if (cmd === 'status') await this.execStatus(m);
+            else if (cmd === 'reset') await this.execReset(m);
+            else if (cmd === 'update') await this.execUpdate(m);
+            else if (cmd === 'lastbackup') await this.execLastBackup(m);
+        } catch (e) {
+            console.error(`Msg Error: ${e.message}`);
+            m.reply(`❌ Error: ${e.message}`).catch(()=>{});
+        }
+    }
+
+    // --- Command Logic Methods ---
+
+    async execAnnounce(ctx, text, attachmentUrl, filtersStr) {
+        const reply = async (msg) => ctx.reply ? ctx.reply(msg) : ctx.editReply(msg);
+        const isSlash = !!ctx.isChatInputCommand;
+        const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
+
+        if (this.stateManager.state.active) return reply("❌ Busy.");
+
+        const parsed = Utils.parseFilters(filtersStr || "");
+        
+        // V10.2: Exact V2.0 Logic for Text
+        let messageText = isSlash ? text : parsed.cleaned; 
+        
+        // Slash Formatting (V2.0)
+        if (isSlash && messageText) {
+            messageText = messageText
+                .replace(/ {2,}/g, '\n\n')
+                .replace(/ ([*•+]) /g, '\n$1 ')
+                .replace(/ (#+) /g, '\n\n$1 ')
+                .replace(/\n /g, '\n'); // V10.2 Corrected Regex
+        }
+
+        const attachments = (attachmentUrl && Utils.isValidUrl(attachmentUrl)) ? [attachmentUrl] : [];
+        if (!messageText && attachments.length === 0) return reply("❌ Empty Message.");
+
+        const gd = await this.ensureGuildData(ctx.guild.id);
+        const vars = await this.aiService.generateVariations(messageText);
+        
+        try { await ctx.guild.members.fetch(); } catch(e){} 
+        const queue = ctx.guild.members.cache.filter(m => !m.user.bot && !parsed.ignore.has(m.id) && !gd.blockedDMs.has(m.id) && !Utils.isSuspiciousAccount(m.user) && (!parsed.only.size || parsed.only.has(m.id))).map(m => m.id);
+        
+        if (!parsed.hasForce && (gd.pendingQueue.length || gd.failedQueue.length)) return reply("⚠️ Queue pending. Use `force`.");
+        if (!queue.length) return reply("❌ No targets.");
+
+        await this.stateManager.modify(s => {
+            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.queue = queue; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
+            if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; }
+        });
+
+        const msg = await (isSlash ? (await ctx.user.createDM()).send(`🚀 Started: ${queue.length}`) : ctx.reply(`🚀 Started: ${queue.length}`));
+        await this.stateManager.modify(s => s.progressMessageRef = { channelId: msg.channel.id, messageId: msg.id });
+        if (isSlash) reply("✅ Check DM.");
+        this.startWorker();
+    }
+
+    async execStop(ctx) {
+        const reply = async (msg) => ctx.reply ? ctx.reply(msg) : ctx.editReply(msg);
+        await this.stateManager.modify(s => s.active = false);
+        reply("🛑 Stopped.");
+    }
+
+    async execStatus(ctx) {
+        const reply = async (msg) => ctx.reply ? ctx.reply(msg) : ctx.editReply(msg);
+        const s = this.stateManager.state;
+        const embed = new EmbedBuilder().setTitle("Status").setDescription(`Active: ${s.active}\nQueue: ${s.queue.length}\nQuarantine: ${s.quarantine}`);
+        reply({ embeds: [embed] });
+    }
+
+    async execUpdate(ctx) {
+        const reply = async (msg) => ctx.reply ? ctx.reply(msg) : ctx.editReply(msg);
+        const gd = await this.ensureGuildData(ctx.guild.id);
+        try { await ctx.guild.members.fetch(); } catch(e){}
+        const known = new Set([...gd.processedMembers, ...gd.blockedDMs, ...gd.failedQueue, ...gd.pendingQueue, ...this.stateManager.state.queue]);
+        const newMems = ctx.guild.members.cache.filter(m => !m.user.bot && !known.has(m.id) && !Utils.isSuspiciousAccount(m.user)).map(m => m.id);
+        if (!newMems.length) return reply("✅ Nothing new.");
+        await this.stateManager.modify(st => st.queue.push(...newMems));
+        reply(`🔄 Added +${newMems.length}.`);
+    }
+
+    async execReset(ctx) {
+        const reply = async (msg) => ctx.reply ? ctx.reply(msg) : ctx.editReply(msg);
+        await this.stateManager.modify(s => { s.active = false; s.quarantine = false; s.queue = []; s.lastError = null; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.activityLog = []; s.circuitBreakerActiveUntil = null; });
+        reply("☢️ Reset.");
+    }
+
+    async execResume(ctx, attachmentUrl) {
+        const reply = async (msg) => ctx.reply ? ctx.reply(msg) : ctx.editReply(msg);
+        const isSlash = !!ctx.isChatInputCommand;
+        const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
+
+        if (this.stateManager.state.active) return reply("⚠️ Active.");
+        let backup = null;
+        if (attachmentUrl) { const res = await Utils.fetchJsonFromUrl(attachmentUrl); if (res.success) backup = res.data; }
+        
+        const gd = await this.ensureGuildData(ctx.guild.id);
+        let q = [...new Set([...this.stateManager.state.queue, ...gd.pendingQueue, ...gd.failedQueue, ...(backup?.queue || [])])].filter(id => !gd.blockedDMs.has(id));
+        if (!q.length) return reply("✅ Empty.");
+        
+        await this.stateManager.modify(s => {
+            s.active = true; s.quarantine = false; s.queue = q; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.guildData[ctx.guild.id].pendingQueue = []; s.initiatorId = initiatorId; 
+            if (backup) { if(backup.text) s.text = backup.text; if(backup.variations) s.variations = backup.variations; if(backup.attachments) s.attachments = backup.attachments; }
+        });
+        const msg = await (isSlash ? (await ctx.user.createDM()).send(`🔄 Resumed: ${q.length}`) : ctx.reply(`🔄 Resumed: ${q.length}`));
+        await this.stateManager.modify(s => s.progressMessageRef = { channelId: msg.channel.id, messageId: msg.id });
+        if (isSlash) reply("✅ Resumed.");
+        this.startWorker();
+    }
+
+    async execLastBackup(ctx) {
+        const reply = async (msg) => ctx.reply ? ctx.reply(msg) : ctx.editReply(msg);
+        const isSlash = !!ctx.isChatInputCommand;
+        const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
+        const s = this.stateManager.state;
+        const gd = s.guildData[ctx.guild.id];
+        
+        if (!gd || (!gd.pendingQueue.length && !gd.failedQueue.length)) return reply("✅ No data.");
+        
+        const buffer = Buffer.from(JSON.stringify(s, null, 2), 'utf-8');
+        const filename = `backup_guild${ctx.guild.id}_${Date.now()}.json`;
+        
+        try {
+            const target = isSlash ? ctx.user : ctx.author;
+            await target.send({ content: "💾 Backup", files: [{ attachment: buffer, name: filename }] });
+            reply("✅ Sent to DM.");
+        } catch(e) { reply("❌ Check DM privacy."); }
     }
 
     startPresenceLoop() {
@@ -956,184 +1135,6 @@ class StealthBot {
 }
 
 // ============================================================================
-// 🔌 6. COMMAND ADAPTER
-// ============================================================================
-
-class CommandContext {
-    constructor(bot) { this.bot = bot; }
-
-    async handleInteraction(i) {
-        if (!i.isChatInputCommand() || !i.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-        try {
-            const opts = { text: i.options.getString('text'), attach: i.options.getAttachment('file')?.url, filter: i.options.getString('filter'), file: i.options.getAttachment('file')?.url };
-            await this.router(i, i.commandName, opts);
-        } catch (e) { console.error(`Cmd Error: ${e.message}`); i.reply({ content: "Error", flags: MessageFlags.Ephemeral }).catch(()=>{}); }
-    }
-
-    async handleMessage(m) {
-        if (m.author.bot) return;
-        if (!m.content) return; 
-        if (!m.content.startsWith('!')) return;
-        
-        let member = m.member;
-        if (!member && m.guild) {
-            try { member = await m.guild.members.fetch(m.author.id); } catch(e) {}
-        }
-        
-        if (!member?.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-        
-        Utils.log(this.bot.id, `CMD RX: ${m.content}`, "DEBUG");
-        
-        const args = m.content.slice(1).trim().split(/ +/);
-        const cmd = args.shift().toLowerCase();
-        
-        const full = m.content.slice(cmd.length + 1).trim();
-        
-        try { await this.router(m, cmd, { text: full, attach: m.attachments.first()?.url, filter: full, file: m.attachments.first()?.url }); } 
-        catch (e) { 
-            console.error(`Msg Cmd Error: ${e.message}`); 
-            m.reply(`❌ Internal Error: ${e.message}`).catch(()=>{});
-        }
-    }
-
-    async router(ctx, cmd, opts) {
-        const isSlash = !!ctx.isChatInputCommand;
-        const reply = async (msg) => isSlash ? (ctx.deferred ? ctx.editReply(msg) : ctx.reply(msg)) : ctx.reply(msg);
-        const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
-        
-        if (isSlash && !ctx.deferred) await ctx.deferReply({ flags: MessageFlags.Ephemeral });
-        
-        Utils.log(this.bot.id, `Router: cmd=${cmd} textLen=${opts.text?.length || 0}`, "DEBUG");
-
-        if (cmd === 'announce') {
-            if (this.bot.stateManager.state.active) return reply("❌ Busy.");
-            
-            const gd = await this.bot.ensureGuildData(ctx.guild.id);
-            
-            let rawText = opts.text || "";
-            const { ignore, only, hasForce } = Utils.parseFilters(opts.filter || rawText);
-            
-            let messageText = isSlash ? rawText : Utils.cleanText(rawText);
-            
-            // V10.2 FIX: Restore V2.0 Slash Formatting Logic
-            if (isSlash && messageText) {
-                messageText = messageText
-                    .replace(/ {2,}/g, '\n\n')       
-                    .replace(/ ([*•+]) /g, '\n$1 ')  
-                    .replace(/ (#+) /g, '\n\n$1 ')   
-                    .replace(/\n /g, '\n');  // V10.2 FIX (Literal spaces after newline)        
-            }
-
-            const attachments = (opts.attach && Utils.isValidUrl(opts.attach)) ? [opts.attach] : [];
-            
-            if (!messageText && attachments.length === 0) return reply("❌ Mensagem vazia.");
-
-            const vars = await this.bot.aiService.generateVariations(messageText);
-            
-            try { await ctx.guild.members.fetch(); } catch(e){} 
-            
-            const queue = ctx.guild.members.cache.filter(m => !m.user.bot && !ignore.has(m.id) && !gd.blockedDMs.has(m.id) && !Utils.isSuspiciousAccount(m.user) && (!only.size || only.has(m.id))).map(m => m.id);
-            
-            if (!hasForce && (gd.pendingQueue.length || gd.failedQueue.length)) return reply("⚠️ Queue pending.");
-            if (!queue.length) return reply("❌ No targets.");
-            
-            await this.bot.stateManager.modify(s => {
-                s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.queue = queue; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
-                if (hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; }
-            });
-            
-            const msg = await (isSlash ? (await ctx.user.createDM()).send(`🚀 Started: ${queue.length}`) : ctx.reply(`🚀 Started: ${queue.length}`));
-            await this.bot.stateManager.modify(s => s.progressMessageRef = { channelId: msg.channel.id, messageId: msg.id });
-            if (isSlash) reply("✅ Check DM.");
-            this.bot.startWorker();
-        } 
-        else if (cmd === 'stop') { await this.bot.stateManager.modify(s => s.active = false); reply("🛑 Stopped."); }
-        else if (cmd === 'status') {
-            const s = this.bot.stateManager.state;
-            reply({ embeds: [new EmbedBuilder().setTitle("Status").setDescription(`Active: ${s.active}\nQueue: ${s.queue.length}\nQuarantine: ${s.quarantine}`)] });
-        }
-        else if (cmd === 'update') {
-            const gd = await this.bot.ensureGuildData(ctx.guild.id);
-            try { await ctx.guild.members.fetch(); } catch(e){}
-            const known = new Set([...gd.processedMembers, ...gd.blockedDMs, ...gd.failedQueue, ...gd.pendingQueue, ...this.bot.stateManager.state.queue]);
-            const newMems = ctx.guild.members.cache.filter(m => !m.user.bot && !known.has(m.id) && !Utils.isSuspiciousAccount(m.user)).map(m => m.id);
-            if (!newMems.length) return reply("✅ Nothing new.");
-            await this.bot.stateManager.modify(st => st.queue.push(...newMems));
-            reply(`🔄 Added +${newMems.length}.`);
-        }
-        else if (cmd === 'resume') {
-            if (this.bot.stateManager.state.active) return reply("⚠️ Active.");
-            let backup = null;
-            if (opts.file) { const res = await Utils.fetchJsonFromUrl(opts.file); if (res.success) backup = res.data; }
-            const gd = await this.bot.ensureGuildData(ctx.guild.id);
-            let q = [...new Set([...this.bot.stateManager.state.queue, ...gd.pendingQueue, ...gd.failedQueue, ...(backup?.queue || [])])].filter(id => !gd.blockedDMs.has(id));
-            if (!q.length) return reply("✅ Empty.");
-            await this.bot.stateManager.modify(s => {
-                s.active = true; s.quarantine = false; s.queue = q; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.guildData[ctx.guild.id].pendingQueue = []; s.initiatorId = initiatorId; 
-                if (backup) { 
-                    if(backup.text) s.text = backup.text; 
-                    if(backup.variations) s.variations = backup.variations; 
-                    if(backup.attachments) s.attachments = backup.attachments;
-                }
-            });
-            const s = this.bot.stateManager.state;
-            if (!s.text && (!s.attachments || s.attachments.length === 0)) return reply("❌ Backup corrupted (Empty).");
-
-            const msg = await (isSlash ? (await ctx.user.createDM()).send(`🔄 Resumed: ${q.length}`) : ctx.reply(`🔄 Resumed: ${q.length}`));
-            await this.bot.stateManager.modify(s => s.progressMessageRef = { channelId: msg.channel.id, messageId: msg.id });
-            if (isSlash) reply("✅ Resumed.");
-            this.bot.startWorker();
-        }
-        else if (cmd === 'reset') {
-            await this.bot.stateManager.modify(s => { s.active = false; s.quarantine = false; s.queue = []; s.lastError = null; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.activityLog = []; s.circuitBreakerActiveUntil = null; });
-            reply("☢️ Reset.");
-        }
-        else if (cmd === 'lastbackup') {
-            const s = this.bot.stateManager.state;
-            const gd = s.guildData[ctx.guild.id];
-            const hasData = gd && (gd.processedMembers.size > 0 || gd.pendingQueue.length > 0 || gd.failedQueue.length > 0);
-            if (!hasData) return reply("✅ No data.");
-            
-            const totalQueue = gd ? (gd.pendingQueue.length + gd.failedQueue.length) : 0;
-            const lastActivity = new Date(s.lastActivityTimestamp).toLocaleString('pt-BR', { timeZone: CONFIG.TIMEZONE });
-            const ageHours = Math.floor((Date.now() - s.lastActivityTimestamp) / 3600000);
-            const ageTag = ageHours > 24 ? ` ⚠️ (${Math.floor(ageHours/24)}d old)` : "";
-
-            const embed = new EmbedBuilder().setTitle("💾 Backup Found").setColor(0x00AEEF).addFields(
-                { name: "📅 Last Active", value: `${lastActivity}${ageTag}`, inline: true },
-                { name: "⏳ Pending", value: `${totalQueue}`, inline: true },
-                { name: "📊 Stats", value: `✅ ${s.currentRunStats.success} | 🚫 ${s.currentRunStats.closed}`, inline: false }
-            ).setFooter({ text: "Recover?" });
-            
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('backup_sim').setLabel('✅ Sim').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('backup_nao').setLabel('❌ Não').setStyle(ButtonStyle.Secondary)
-            );
-            
-            const msg = await (isSlash ? ctx.editReply({ embeds: [embed], components: [row] }) : ctx.reply({ embeds: [embed], components: [row] }));
-            const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
-            
-            collector.on('collect', async i => {
-                if (i.user.id !== initiatorId) return i.reply({ content: "⛔ Denied.", flags: MessageFlags.Ephemeral });
-                if (i.customId === 'backup_sim') {
-                    const safeState = JSON.stringify(s, (k, v) => v instanceof Set ? [...v] : v, 2);
-                    const buffer = Buffer.from(safeState, 'utf-8');
-                    const filename = `backup_guild${ctx.guild.id}_${Date.now()}.json`;
-                    await i.update({ content: "📤 Sending...", embeds: [], components: [] });
-                    try {
-                        await i.user.send({ content: "💾 **Backup**", files: [{ attachment: buffer, name: filename }] });
-                        if (!isSlash) await ctx.reply("✅ Sent to DM."); else await i.followUp({ content: "✅ Sent to DM.", flags: MessageFlags.Ephemeral });
-                    } catch (e) {
-                        if (!isSlash) await ctx.reply("❌ Check DM privacy."); else await i.followUp({ content: "❌ Check DM privacy.", flags: MessageFlags.Ephemeral });
-                    }
-                } else { await i.update({ content: "❌ Cancelled.", embeds: [], components: [] }); }
-                collector.stop();
-            });
-        }
-    }
-}
-
-// ============================================================================
 // 🚀 BOOTSTRAPPER & HTTP SERVER
 // ============================================================================
 const bots = [];
@@ -1146,7 +1147,7 @@ while(true) {
     bots.push(b);
 }
 
-// V10.2 FIX: HTTP Server at the end to access 'bots'
+// V10.2: HTTP Server with Bot Access
 http.createServer((req, res) => {
     const uptime = process.uptime();
     const status = {
