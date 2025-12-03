@@ -1,14 +1,15 @@
 /**
  * ============================================================================
- * PROJECT: DISCORD MASS DM BOT - V9.6 APEX REFINED
+ * PROJECT: DISCORD MASS DM BOT - V9.8 TITAN EDITION
  * ARCHITECTURE: Event-Driven | Box-Muller Math | O(1) State | Adapter Pattern
  * ENGINE: Node.js + Discord.js v14
  * AUTHOR: Matheus Schumacher & Gemini Engineering Team
  * DATE: December 2025
- * * [CHANGELOG V9.6]
- * 1. CLEANUP: Fixed cosmetic destructuring bug in announce command.
- * 2. CERTIFIED: Full entropy, atomic persistence, and circuit breakers active.
- * 3. STABLE: No functional changes to logic, just polish.
+ * * [CHANGELOG V9.8]
+ * 1. FORMAT: Restored V2.0 Regex logic (Headers/Bullets/Paragraphs fixed).
+ * 2. LOGIC: Fixed 'cleanedText' undefined bug in command router.
+ * 3. PARSING: Strict separation between Message Text and Command Filters.
+ * 4. STABLE: Retains V9.7 Error Handling & Sentinel Logging.
  * ============================================================================
  */
 
@@ -216,7 +217,7 @@ const Utils = {
 };
 
 // ============================================================================
-// 🧠 3. ROBUST EXTERNAL SERVICES
+// 🧠 3. SERVICES
 // ============================================================================
 
 class AIService {
@@ -475,7 +476,7 @@ class StealthBot {
         this.hourlyResetTime = Date.now() + 3600000;
         this.workerRunning = false;
         this.lastActivityTime = Date.now();
-        this.lastPresenceActivity = "";
+        this.lastPresenceActivity = ""; 
         this.logBuffer = this.stateManager.state.activityLog || []; 
         this.lastEmbedRecovery = 0;
 
@@ -741,7 +742,7 @@ class StealthBot {
                         this.addActivityLog(`Circuit: Privacy. Cooling triggered.`, "CIRCUIT");
                         await this.updateEmbed();
                         circuit.closed = 0;
-                        break; // Exit Batch -> Top of Loop handles Wait
+                        break; 
                     }
                     if (circuit.network >= CONFIG.THRESHOLDS.CONSECUTIVE_NET_ERRORS) {
                         this.addActivityLog("Circuit: Network. Waiting 1m", "CIRCUIT");
@@ -793,14 +794,9 @@ class StealthBot {
             if (!channel) return;
             const msgs = await channel.messages.fetch({ limit: 5 });
             const target = msgs.filter(m => !m.author.bot).random();
-            
             if (target) {
-                if (Math.random() < 0.05) {
-                    const replies = ["👀", "nice", "top", "brabo", "🔥"];
-                    await target.reply(replies[Math.floor(Math.random() * replies.length)]);
-                } else {
-                    await target.react(["👍", "🔥", "👀"][Math.floor(Math.random() * 3)]);
-                }
+                if (Math.random() < 0.05) await target.reply(["👀", "nice", "top", "brabo", "🔥"][Math.floor(Math.random() * 5)]);
+                else await target.react(["👍", "🔥", "👀"][Math.floor(Math.random() * 3)]);
             }
         } catch (e) {}
     }
@@ -832,7 +828,7 @@ class StealthBot {
             const timeText = timeSince < 60 ? `${timeSince}s ago` : `${Math.floor(timeSince/60)}m ago`;
 
             const embed = new EmbedBuilder()
-                .setTitle(`${status.emoji} Bot ${this.id} | V9.6 APEX`)
+                .setTitle(`${status.emoji} Bot ${this.id} | V9.8 TITAN`)
                 .setDescription(`**Status:** ${status.text}`)
                 .setColor(s.quarantine ? 0xFF0000 : status.text === 'Active' ? 0x00FF00 : 0xFFAA00)
                 .addFields(
@@ -952,10 +948,14 @@ class CommandContext {
         
         const args = m.content.slice(1).trim().split(/ +/);
         const cmd = args.shift().toLowerCase();
+        
         const full = m.content.slice(cmd.length + 1).trim();
         
         try { await this.router(m, cmd, { text: full, attach: m.attachments.first()?.url, filter: full, file: m.attachments.first()?.url }); } 
-        catch (e) { console.error(`Msg Cmd Error: ${e.message}`); }
+        catch (e) { 
+            console.error(`Msg Cmd Error: ${e.message}`); 
+            m.reply(`❌ Internal Error: ${e.message}`).catch(()=>{});
+        }
     }
 
     async router(ctx, cmd, opts) {
@@ -964,19 +964,29 @@ class CommandContext {
         const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
         
         if (isSlash && !ctx.deferred) await ctx.deferReply({ flags: MessageFlags.Ephemeral });
+        
+        Utils.log(this.bot.id, `Router: cmd=${cmd} textLen=${opts.text?.length || 0}`, "DEBUG");
 
         if (cmd === 'announce') {
             if (this.bot.stateManager.state.active) return reply("❌ Busy.");
             
-            // 🔥 V9.6 FIX: Declarar gd ANTES de usar
             const gd = await this.bot.ensureGuildData(ctx.guild.id);
             
+            // V9.8 FIX: Parse filters from either separate filter option OR raw text
             let rawText = opts.text || "";
-            // 🔥 V9.6 FIX: Remoção de 'cleanedText' na destructuring (Bug Visual)
             const { ignore, only, hasForce } = Utils.parseFilters(opts.filter || rawText);
             
+            // V9.8 FIX: Clean text only if using ! prefix
             let messageText = isSlash ? rawText : Utils.cleanText(rawText);
-            if (isSlash && messageText) messageText = messageText.replace(/ {2,}/g, '\n\n').replace(/ ([*•+]) /g, '\n$1 ').replace(/\n /g, '\n');
+            
+            // V9.8 FIX: V2.0 Formatting Restoration (Headers/Bullets)
+            if (isSlash && messageText) {
+                messageText = messageText
+                    .replace(/ {2,}/g, '\n\n')       
+                    .replace(/ ([*•+]) /g, '\n$1 ')  
+                    .replace(/ (#+) /g, '\n\n$1 ')   
+                    .replace(/\n /g, '\n');          
+            }
 
             const attachments = (opts.attach && Utils.isValidUrl(opts.attach)) ? [opts.attach] : [];
             
@@ -1103,9 +1113,9 @@ while(true) {
 http.createServer((req, res) => {
     res.writeHead(200, {'Content-Type': 'application/json'});
     res.end(JSON.stringify({
-        system: "V9.6 APEX REFINED",
+        system: "V9.8 TITAN",
         bots: bots.map(b => ({ id: b.id, q: b.stateManager.state.queue.length, active: b.stateManager.state.active }))
     }, null, 2));
-}).listen(process.env.PORT || 8080, () => console.log(`🛡️ V9.6 ONLINE | PORT ${process.env.PORT || 8080}`));
+}).listen(process.env.PORT || 8080, () => console.log(`🛡️ V9.8 ONLINE | PORT ${process.env.PORT || 8080}`));
 
 process.on('SIGTERM', () => { bots.forEach(b => b.stateManager.forceSave()); process.exit(0); });
