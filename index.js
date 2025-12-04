@@ -1,13 +1,13 @@
 /**
  * ============================================================================
- * PROJECT: DISCORD MASS DM BOT - V28.1 HOTFIX EDITION
- * ARCHITECTURE: V28.0 Core + Missing Function Fix + Self-DM Enabled
+ * PROJECT: DISCORD MASS DM BOT - V32.0 EMOJI-SAFE EDITION
+ * ARCHITECTURE: V31.0 Core + Regex Fix for Inline Emojis
  * AUTHOR: Matheus Schumacher & Gemini Engineering Team
  * DATE: December 2025
- * * [CHANGELOG V28.1]
- * 1. FIX: Reimplementada função 'getNextSleepTimestamp' que causava o crash.
- * 2. LOGIC: Removido filtro de auto-envio (Agora o admin também recebe a DM para teste).
- * 3. STABLE: Mantém logs de debug detalhados e fetch confiável.
+ * * [CHANGELOG V32.0]
+ * 1. FIX: 'parseSlashInput' updated to prevent inline emojis breaking lines.
+ * 2. REGEX: Bullet point detection is now strict (Start of Line Only).
+ * 3. STABLE: All V31 features (Live Panel, Anti-Ban, Multi-Bot) preserved.
  * ============================================================================
  */
 
@@ -70,7 +70,7 @@ const CONFIG = {
     STATE_SAVE_DEBOUNCE_MS: 5000,        
     
     // --- Filtros ---
-    SAFE_MODE: false, // ⚠️ FALSE = ENVIA PARA TODOS (INCLUINDO NOVOS/SEM AVATAR)
+    SAFE_MODE: false, 
     MIN_ACCOUNT_AGE_DAYS: 30,
     IGNORE_NO_AVATAR: true,
     MAX_RETRIES: 3,
@@ -99,10 +99,51 @@ const CONFIG = {
 };
 
 // ============================================================================
-// 🛠️ 2. UTILITÁRIOS
+// 🛠️ 2. UTILITÁRIOS & FORMATAÇÃO
 // ============================================================================
 
 const Utils = {
+    // 🔥 V32.0: EMOJI-SAFE FORMATTER
+    parseSlashInput: (text) => {
+        if (!text) return "";
+        let str = String(text);
+
+        // 1. Normalizar quebras de linha literais
+        str = str.replace(/\\n/g, '\n');
+
+        // 2. Preservar Headers (#, ##, ###)
+        // Garante que headers tenham uma linha vazia antes, a menos que seja a primeira linha
+        str = str.replace(/([^\n])\s*(#+ )/g, '$1\n\n$2');
+        str = str.replace(/^\s*(#+ )/g, '$1');
+
+        // 3. 🔥 FIX: Preservar Bullets APENAS no início da linha
+        // Impede que emojis no meio do texto sejam quebrados
+        str = str.replace(/(\n|^)\s*([-*•+➦➜→=>])\s+/gm, '$1$2 ');
+
+        // 4. Limpeza de Espaços
+        // Remove excesso de quebras (>2) para evitar buracos, mas mantém parágrafos
+        str = str.replace(/\n{3,}/g, '\n\n');
+        
+        return str.trim();
+    },
+
+    personalizeText: (template, user) => {
+        if (!template) return "";
+        const safeTemplate = String(template);
+        const displayName = user.globalName || user.username || "amigo";
+        const safeName = displayName.replace(/[*_`~|@#\\]/g, '');
+        return safeTemplate.replace(/\{name\}|\{username\}|\{nome\}/gi, safeName);
+    },
+
+    sanitizeString: (input) => {
+        if (!input) return "";
+        if (typeof input === 'string') return input;
+        if (typeof input === 'object') {
+            return input.text || input.message || input.content || input.variation || JSON.stringify(input);
+        }
+        return String(input);
+    },
+
     isPeakHour: () => {
         const date = new Date();
         const hourStr = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: CONFIG.TIMEZONE }).format(date);
@@ -117,20 +158,13 @@ const Utils = {
         return hour >= CONFIG.SLEEP_START_HOUR && hour < CONFIG.SLEEP_END_HOUR;
     },
 
-    // 🔥 FIX V28.1: Função restaurada
     getNextSleepTimestamp: () => {
         const now = new Date();
         const timeString = now.toLocaleString("en-US", { timeZone: CONFIG.TIMEZONE });
         const localDate = new Date(timeString);
-        
         const targetDate = new Date(localDate);
         targetDate.setHours(CONFIG.SLEEP_START_HOUR, 0, 0, 0);
-        
-        // Se já passou das 3h hoje, agenda para amanhã
-        if (targetDate <= localDate) {
-            targetDate.setDate(targetDate.getDate() + 1);
-        }
-        
+        if (targetDate <= localDate) targetDate.setDate(targetDate.getDate() + 1);
         const diff = targetDate.getTime() - localDate.getTime();
         return Date.now() + diff;
     },
@@ -182,20 +216,11 @@ const Utils = {
         };
     },
 
-    personalizeText: (template, user) => {
-        if (!template) return "";
-        const displayName = user.globalName || user.username || "amigo";
-        const safeName = displayName.replace(/[*_`~|@]/g, '');
-        return template.replace(/\{name\}|\{username\}|\{nome\}/gi, safeName);
-    },
-
     checkAccountStatus: (user) => {
         if (!CONFIG.SAFE_MODE) return { safe: true }; 
-        
         const ageInDays = (Date.now() - user.createdTimestamp) / (1000 * 60 * 60 * 24);
         if (ageInDays < CONFIG.MIN_ACCOUNT_AGE_DAYS) return { safe: false, reason: `Too New (${ageInDays.toFixed(1)} days)` };
         if (CONFIG.IGNORE_NO_AVATAR && !user.avatar) return { safe: false, reason: "No Avatar" };
-        
         return { safe: true };
     },
     
@@ -212,8 +237,9 @@ const Utils = {
         }
         const cleaned = text.replace(regex, "").trim();
         const hasForce = /\bforce\b/i.test(cleaned);
-        const finalCleaned = hasForce ? cleaned.replace(/\bforce\b/i, '').trim() : cleaned;
-        return { cleaned: finalCleaned, ignore, only, hasForce };
+        // For commands !announce, we return clean text
+        // For slash commands, we will rely on parseSlashInput later
+        return { cleaned: finalCleaned(cleaned), ignore, only, hasForce };
     },
 
     cleanText: (text) => {
@@ -241,6 +267,12 @@ const Utils = {
     }
 };
 
+// Helper for parseSelectors to avoid undefined error
+function finalCleaned(t) { 
+    const hasForce = /\bforce\b/i.test(t); 
+    return hasForce ? t.replace(/\bforce\b/i, '').trim() : t; 
+}
+
 // ============================================================================
 // 🧠 SERVIÇOS
 // ============================================================================
@@ -259,19 +291,40 @@ class AIService {
         const cacheKey = crypto.createHash('md5').update(originalText).digest('hex');
         if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
 
-        const prompt = `ROLE: Expert Paraphraser.\nTASK: Generate ${count} variations.\nRULES: Keep language & {name}.\nOUTPUT: JSON Array.\nINPUT: "${originalText}"`;
+        const prompt = `
+        ROLE: Expert Paraphraser & Markdown Specialist.
+        TASK: Generate ${count} variations of the input text.
+        
+        ⚠️ CRITICAL RULES (DO NOT BREAK):
+        1. PRESERVE ALL MARKDOWN: Keep Headers (#), Bold (**), Lists (-/•), and Links ([x](y)) EXACTLY as they are structure-wise.
+        2. PRESERVE LAYOUT: Do NOT remove line breaks or merge paragraphs.
+        3. PRESERVE VARIABLES: Keep {name} placeholders intact.
+        4. PRESERVE ALL EMOJIS: Keep ALL emojis (🎁, 🕐, 🔥, 💎) EXACTLY where they are. DO NOT remove or replace emojis.
+        5. ONLY change synonyms and sentence structure of the plain text parts.
+        
+        OUTPUT: A valid JSON Array of strings.
+        INPUT: """${originalText}"""
+        `;
 
         try {
             const result = await this.model.generateContent(prompt);
             const response = await result.response.text();
-            const jsonMatch = response.match(/\[[\s\S]*\]/);
-            if (!jsonMatch) return heuristics;
-            const variations = JSON.parse(jsonMatch[0]);
-            const final = Array.isArray(variations) ? [...new Set([...variations, originalText])] : heuristics;
+            
+            const cleanJson = response.replace(/```json/g, '').replace(/```/g, '').trim();
+            const variations = JSON.parse(cleanJson);
+            
+            const flatVariations = Array.isArray(variations) 
+                ? variations.map(v => Utils.sanitizeString(v)) 
+                : [Utils.sanitizeString(variations)];
+                
+            const final = [...new Set([...flatVariations, originalText])];
+            
             if (this.cache.size >= CONFIG.MAX_AI_CACHE_SIZE) this.cache.delete(this.cache.keys().next().value);
             this.cache.set(cacheKey, final);
             return final;
-        } catch (error) { return heuristics; }
+        } catch (error) { 
+            return heuristics; 
+        }
     }
 }
 
@@ -418,7 +471,6 @@ class StealthBot {
         setInterval(() => this.runWatchdog(), 60000);
     }
 
-    // --- V27.0: Recursive Member Fetch ---
     async getCachedMembers(guild) {
         const cached = this.memberCache.get(guild.id);
         if (cached && Date.now() - cached.timestamp < CONFIG.MEMBER_CACHE_TTL) return cached.members;
@@ -439,17 +491,14 @@ class StealthBot {
                 Utils.log(this.id, `Fetched ${fetched.size} members... Total: ${members.size}`, "DEBUG");
                 if (fetched.size < 1000) break;
                 
-                await new Promise(r => setTimeout(r, 500)); // Safety delay
+                await new Promise(r => setTimeout(r, 500)); 
             }
         } catch (e) {
             Utils.log(this.id, `Fetch Error: ${e.message}. Using partial results.`, "WARN");
         }
 
         Utils.log(this.id, `Total Members Confirmed: ${members.size}`, "INFO");
-        
-        // Transform to array-like structure for filtering
         const membersArray = Array.from(members.values());
-        
         this.memberCache.set(guild.id, { members: membersArray, timestamp: Date.now() });
         return membersArray;
     }
@@ -575,52 +624,62 @@ class StealthBot {
         Utils.log(this.id, `Attempting DM to ${user.tag}`, "DEBUG"); 
         this.lastActivityTime = Date.now();
         
-        let dmChannel;
-        try { dmChannel = user.dmChannel || await user.createDM(); } catch (e) { 
-            Utils.log(this.id, `Failed to open DM: ${user.tag} - ${e.message}`, "WARN");
-            return { success: false, reason: "closed" }; 
-        }
+        try {
+            let dmChannel;
+            try { dmChannel = user.dmChannel || await user.createDM(); } catch (e) { 
+                Utils.log(this.id, `Failed to open DM: ${user.tag} - ${e.message}`, "WARN");
+                return { success: false, reason: "closed" }; 
+            }
 
-        const textTemplate = (variations?.length > 0) ? variations[Math.floor(Math.random() * variations.length)] : rawText;
-        const finalText = Utils.personalizeText(textTemplate, user);
-        
-        if (!finalText && (!attachments || attachments.length === 0)) return { success: false, reason: "empty" };
+            // V31.0: Robust selection & sanitization
+            const textTemplate = (variations?.length > 0) 
+                ? variations[Math.floor(Math.random() * variations.length)] 
+                : rawText;
+            
+            const cleanTemplate = Utils.sanitizeString(textTemplate);
+            const finalText = Utils.personalizeText(cleanTemplate, user);
+            
+            if (!finalText && (!attachments || attachments.length === 0)) return { success: false, reason: "empty" };
 
-        const shouldType = Math.random() < 0.80; 
-        if (shouldType && finalText) {
-            const typeTime = this.calculateTypingTime(finalText.length);
-            try { await dmChannel.sendTyping(); await this.wait(typeTime); } catch(e) {}
-        } else { await this.wait(1500 + Math.random() * 2000); }
+            const shouldType = Math.random() < 0.80; 
+            if (shouldType && finalText) {
+                const typeTime = this.calculateTypingTime(finalText.length);
+                try { await dmChannel.sendTyping(); await this.wait(typeTime); } catch(e) {}
+            } else { await this.wait(1500 + Math.random() * 2000); }
 
-        const payload = {};
-        if (finalText) payload.content = finalText;
-        if (attachments?.length) payload.files = attachments;
+            const payload = {};
+            if (finalText) payload.content = finalText;
+            if (attachments?.length) payload.files = attachments;
 
-        for (let attempt = 0; attempt < CONFIG.MAX_RETRIES; attempt++) {
-            try {
-                await dmChannel.send(payload);
-                this.addActivityLog(`Sent: ${user.tag}`, "SUCCESS");
-                return { success: true };
-            } catch (err) {
-                const code = err.code || 0;
-                if (code === 40003 || err.message.toLowerCase().includes("spam")) {
-                    await this.stateManager.modify(s => { s.quarantine = true; s.lastError = `API ${code}: ${err.message}`; });
-                    return { success: false, reason: "quarantine" };
-                }
-                if (code === 50007 || code === 20016 || code === 50001) return { success: false, reason: "closed" };
-                
-                if (err.retry_after) { 
-                    await this.wait(err.retry_after * 1000 + 1000); 
-                    continue; 
-                }
-                
-                if (code >= 500) {
-                    await this.waitExponential(attempt);
-                    if (attempt === CONFIG.MAX_RETRIES - 1) return { success: false, reason: "network" };
+            for (let attempt = 0; attempt < CONFIG.MAX_RETRIES; attempt++) {
+                try {
+                    await dmChannel.send(payload);
+                    this.addActivityLog(`Sent: ${user.tag}`, "SUCCESS");
+                    return { success: true };
+                } catch (err) {
+                    const code = err.code || 0;
+                    if (code === 40003 || err.message.toLowerCase().includes("spam")) {
+                        await this.stateManager.modify(s => { s.quarantine = true; s.lastError = `API ${code}: ${err.message}`; });
+                        return { success: false, reason: "quarantine" };
+                    }
+                    if (code === 50007 || code === 20016 || code === 50001) return { success: false, reason: "closed" };
+                    
+                    if (err.retry_after) { 
+                        await this.wait(err.retry_after * 1000 + 1000); 
+                        continue; 
+                    }
+                    
+                    if (code >= 500) {
+                        await this.waitExponential(attempt);
+                        if (attempt === CONFIG.MAX_RETRIES - 1) return { success: false, reason: "network" };
+                    }
                 }
             }
+            return { success: false, reason: "fail" };
+        } catch (globalErr) {
+            Utils.log(this.id, `CRITICAL FAIL on ${user.tag}: ${globalErr.message}`, "ERROR");
+            return { success: false, reason: "fail" };
         }
-        return { success: false, reason: "fail" };
     }
 
     async workerLoop() {
@@ -683,23 +742,9 @@ class StealthBot {
                     try { user = await this.client.users.fetch(userId); } catch (e) { continue; }
                     const gd = await this.ensureGuildData(state.currentAnnounceGuildId);
 
-                    // V26: Relaxed Check
-                    // V28: Detailed Log for Skipped Users
-                    if (user.bot) {
-                        Utils.log(this.id, `Ignored ${user.tag}: Bot`, "DEBUG");
-                        continue;
-                    }
-                    if (gd.blockedDMs.has(userId)) {
-                        Utils.log(this.id, `Ignored ${user.tag}: Blocked/Ignored`, "DEBUG");
-                        continue;
-                    }
-                    
-                    // V28: Detailed Suspicious Check
+                    // V31.0: Check Filters
                     const accountStatus = Utils.checkAccountStatus(user);
-                    if (!accountStatus.safe) {
-                         Utils.log(this.id, `Ignored ${user.tag}: ${accountStatus.reason}`, "DEBUG");
-                         continue;
-                    }
+                    if (user.bot || gd.blockedDMs.has(userId) || !accountStatus.safe) continue;
 
                     const result = await this.sendStealthDM(user, state.text, state.attachments, state.variations);
                     this.sendsThisHour++;
@@ -816,7 +861,7 @@ class StealthBot {
                 const g = st.guildData[st.currentAnnounceGuildId];
                 if(g) g.pendingQueue = []; 
             });
-            this.addActivityLog("Finalizing...", "INFO"); // V28 UX Fix
+            this.addActivityLog("Finalizing...", "INFO"); 
         } else if (s.queue.length > 0 && s.currentAnnounceGuildId) {
             await this.stateManager.modify(st => {
                 const g = st.guildData[st.currentAnnounceGuildId];
@@ -845,7 +890,7 @@ class StealthBot {
             const timeText = timeSince < 60 ? `${timeSince}s ago` : `${Math.floor(timeSince/60)}m ago`;
 
             const embed = new EmbedBuilder()
-                .setTitle(`${status.emoji} Bot ${this.id} | V28.1 HOTFIX`)
+                .setTitle(`${status.emoji} Bot ${this.id} | V31.0 ULTIMATE`)
                 .setDescription(`**Status:** ${status.text}`)
                 .setColor(s.quarantine ? 0xFF0000 : status.text === 'Active' ? 0x00FF00 : 0xFFAA00)
                 .addFields(
@@ -910,7 +955,6 @@ class StealthBot {
     async handleInteraction(i) {
         if (!i.isChatInputCommand() || !i.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
         
-        // V24.0 INSTANT RESPONSE: Defer immediately to show "Thinking..."
         await i.deferReply({ flags: MessageFlags.Ephemeral });
         
         try {
@@ -987,15 +1031,9 @@ class StealthBot {
 
         // Logic continues in background...
         const parsed = Utils.parseSelectors(filtersStr || "");
-        let messageText = isSlash ? text : parsed.cleaned; 
         
-        if (isSlash && messageText) {
-            messageText = messageText
-                .replace(/ {2,}/g, '\n\n')
-                .replace(/ ([*•+]) /g, '\n$1 ')
-                .replace(/ (#+) /g, '\n\n$1 ')
-                .replace(/\n /g, '\n');
-        }
+        // 🔥 V31.0: Apply parser BEFORE anything else
+        let messageText = isSlash ? Utils.parseSlashInput(text) : parsed.cleaned; 
 
         const attachments = (attachmentUrl && Utils.isValidUrl(attachmentUrl)) ? [attachmentUrl] : [];
         if (!messageText && attachments.length === 0) {
@@ -1003,42 +1041,24 @@ class StealthBot {
             return statusMsg.edit("❌ Empty Message.");
         }
 
-        // Heavy Tasks AFTER feedback
         const gd = await this.ensureGuildData(ctx.guild.id);
         const vars = await this.aiService.generateVariations(messageText);
         
-        // V27.0: Reliable Fetch
         const members = await this.getCachedMembers(ctx.guild);
         
-        // V28.0: Explicit Filtering Logic for Debug
         const queue = [];
         for (const m of members) {
-             // 1. Bot check
-             if (m.user.bot) {
-                 Utils.log(this.id, `Ignored ${m.user.tag}: Bot`, "DEBUG");
-                 continue;
-             }
-             // 2. Filters
-             if (parsed.ignore.has(m.id) || gd.blockedDMs.has(m.id)) {
-                 Utils.log(this.id, `Ignored ${m.user.tag}: Blocked/Ignored`, "DEBUG");
-                 continue;
-             }
-             // 3. Only
-             if (parsed.only.size > 0 && !parsed.only.has(m.id)) {
-                 continue;
-             }
-             // 4. Suspicious (Account Age/Avatar) - Can be bypassed by SAFE_MODE
+             if (m.user.bot) continue;
+             if (parsed.ignore.has(m.id) || gd.blockedDMs.has(m.id)) continue;
+             if (parsed.only.size > 0 && !parsed.only.has(m.id)) continue;
+             
              const acctStatus = Utils.checkAccountStatus(m.user);
-             if (!acctStatus.safe) {
-                 Utils.log(this.id, `Ignored ${m.user.tag}: ${acctStatus.reason}`, "DEBUG");
-                 continue;
-             }
+             if (!acctStatus.safe) continue;
              
              queue.push(m.id);
         }
         
-        // V28.1 Logic Fix: Allow self-DM for test (remove initiator filter)
-        // const finalQueue = queue.filter(id => id !== initiatorId); // REMOVIDO
+        // V28.1: Allow self-DM for test
         const finalQueue = queue;
 
         if (!parsed.hasForce && (gd.pendingQueue.length || gd.failedQueue.length)) {
@@ -1223,7 +1243,7 @@ while(true) {
 http.createServer((req, res) => {
     const uptime = process.uptime();
     const status = {
-        status: "V28.1 HOTFIX ONLINE",
+        status: "V31.0 ULTIMATE FORMAT ONLINE",
         uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
         timestamp: new Date().toISOString(),
         bots: bots.map(b => ({ 
@@ -1235,7 +1255,7 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status, null, 2));
 }).listen(CONFIG.HTTP_PORT, () => {
-    console.log(`🛡️ V28.1 ONLINE | PORT ${CONFIG.HTTP_PORT}`);
+    console.log(`🛡️ V31.0 ONLINE | PORT ${CONFIG.HTTP_PORT}`);
 });
 
 process.on('SIGTERM', () => { bots.forEach(b => b.stateManager.forceSave()); process.exit(0); });
