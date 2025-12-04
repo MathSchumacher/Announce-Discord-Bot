@@ -299,7 +299,7 @@ class AIService {
         1. PRESERVE ALL MARKDOWN: Keep Headers (#), Bold (**), Lists (-/•), and Links ([x](y)) EXACTLY as they are structure-wise.
         2. PRESERVE LAYOUT: Do NOT remove line breaks or merge paragraphs.
         3. PRESERVE VARIABLES: Keep {name} placeholders intact.
-        4. PRESERVE ALL EMOJIS: Keep ALL emojis (🎁, 🕐, 🔥, 💎) EXACTLY where they are. DO NOT remove or replace emojis.
+        4. PRESERVE ALL EMOJIS: just dont remove them and keep in same place as the original message.
         5. ONLY change synonyms and sentence structure of the plain text parts.
         
         OUTPUT: A valid JSON Array of strings.
