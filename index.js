@@ -1,14 +1,13 @@
 /**
  * ============================================================================
- * PROJECT: DISCORD MASS DM BOT - V19.1 POLISHED EDITION
- * ARCHITECTURE: V19.0 Core + Critical Bug Fixes + UX Improvements
+ * PROJECT: DISCORD MASS DM BOT - V28.1 HOTFIX EDITION
+ * ARCHITECTURE: V28.0 Core + Missing Function Fix + Self-DM Enabled
  * AUTHOR: Matheus Schumacher & Gemini Engineering Team
  * DATE: December 2025
- * * [CHANGELOG V19.1]
- * 1. FIX: Adicionado check (!m.guild) no handleMessage para evitar crash em DMs.
- * 2. FIX: Lógica de resposta do /lastbackup corrigida para suportar comandos !.
- * 3. DOC: Comentários de registro de listeners corrigidos para precisão.
- * 4. STABLE: Mantém todas as features da V19.0 (Soft-Ban, Sleep, etc).
+ * * [CHANGELOG V28.1]
+ * 1. FIX: Reimplementada função 'getNextSleepTimestamp' que causava o crash.
+ * 2. LOGIC: Removido filtro de auto-envio (Agora o admin também recebe a DM para teste).
+ * 3. STABLE: Mantém logs de debug detalhados e fetch confiável.
  * ============================================================================
  */
 
@@ -56,24 +55,26 @@ const CONFIG = {
     
     // --- Segurança & Circuit Breakers ---
     THRESHOLDS: {
-        CONSECUTIVE_CLOSED_DMS: 3,     // 3 failures = Privacy Cooling (README)
-        CONSECUTIVE_NET_ERRORS: 5,     // 5 errors = Network Wait (README)
+        CONSECUTIVE_CLOSED_DMS: 3,     
+        CONSECUTIVE_NET_ERRORS: 5,     
         REQUIRED_SUCCESS_TO_RESET: 5,  
-        CRITICAL_REJECTION_RATE: 0.4,  // 40% = Critical Mode
-        SOFT_BAN_THRESHOLD: 0.25,      // 25% = Soft Ban Warning
+        CRITICAL_REJECTION_RATE: 0.4,  
+        SOFT_BAN_THRESHOLD: 0.25,      
         SOFT_BAN_MIN_SAMPLES: 20       
     },
     
     // --- Timings & Cooling (ms) ---
-    CLOSED_DM_COOLING_MS: 20 * 60 * 1000, // 20 Minutes (README)
-    MAX_SENDS_PER_HOUR: 90,               // 90/h (README)
-    INACTIVITY_THRESHOLD: 120 * 1000,     // 2 min freeze detection (README)
-    STATE_SAVE_DEBOUNCE_MS: 5000,      
+    CLOSED_DM_COOLING_MS: 20 * 60 * 1000, 
+    MAX_SENDS_PER_HOUR: 90,           
+    INACTIVITY_THRESHOLD: 120 * 1000, 
+    STATE_SAVE_DEBOUNCE_MS: 5000,        
     
     // --- Filtros ---
+    SAFE_MODE: false, // ⚠️ FALSE = ENVIA PARA TODOS (INCLUINDO NOVOS/SEM AVATAR)
     MIN_ACCOUNT_AGE_DAYS: 30,
     IGNORE_NO_AVATAR: true,
     MAX_RETRIES: 3,
+    MEMBER_CACHE_TTL: 10 * 60 * 1000, 
     
     // --- Humanização ---
     PEAK_HOUR_START: 18,
@@ -93,12 +94,12 @@ const CONFIG = {
     PAUSE_CRITICAL: { MIN: 15, MAX: 30 },
 
     // --- Sleep Cycle ---
-    SLEEP_START_HOUR: 3,
+    SLEEP_START_HOUR: 3, 
     SLEEP_END_HOUR: 8
 };
 
 // ============================================================================
-// 🛠️ 2. UTILITÁRIOS & MATH
+// 🛠️ 2. UTILITÁRIOS
 // ============================================================================
 
 const Utils = {
@@ -108,34 +109,57 @@ const Utils = {
         const hour = parseInt(hourStr, 10);
         return hour >= CONFIG.PEAK_HOUR_START && hour <= CONFIG.PEAK_HOUR_END;
     },
+    
+    isSleepTime: () => {
+        const date = new Date();
+        const hourStr = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: CONFIG.TIMEZONE }).format(date);
+        const hour = parseInt(hourStr, 10);
+        return hour >= CONFIG.SLEEP_START_HOUR && hour < CONFIG.SLEEP_END_HOUR;
+    },
+
+    // 🔥 FIX V28.1: Função restaurada
+    getNextSleepTimestamp: () => {
+        const now = new Date();
+        const timeString = now.toLocaleString("en-US", { timeZone: CONFIG.TIMEZONE });
+        const localDate = new Date(timeString);
+        
+        const targetDate = new Date(localDate);
+        targetDate.setHours(CONFIG.SLEEP_START_HOUR, 0, 0, 0);
+        
+        // Se já passou das 3h hoje, agenda para amanhã
+        if (targetDate <= localDate) {
+            targetDate.setDate(targetDate.getDate() + 1);
+        }
+        
+        const diff = targetDate.getTime() - localDate.getTime();
+        return Date.now() + diff;
+    },
+
+    getWakeTime: () => {
+        const now = new Date();
+        const timeString = now.toLocaleString("en-US", { timeZone: CONFIG.TIMEZONE });
+        const localDate = new Date(timeString);
+        const wakeDate = new Date(localDate);
+        wakeDate.setHours(CONFIG.SLEEP_END_HOUR, 0, 0, 0);
+        if (wakeDate <= localDate) wakeDate.setDate(wakeDate.getDate() + 1);
+        return wakeDate.getTime() - localDate.getTime();
+    },
 
     calculateHumanDelay: () => {
-        // Box-Muller Distribution (12-65s range)
         let u = 0, v = 0;
         while(u === 0) u = Math.random();
         while(v === 0) v = Math.random();
-        
         const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
         const mu = 3.8; 
         const sigma = 0.8;
-        
         let delay = Math.exp(mu + sigma * z) * 1000;
-
-        if (Utils.isPeakHour()) {
-            delay *= (1.2 + Math.random() * 0.5);
-        }
-
+        if (Utils.isPeakHour()) delay *= (1.2 + Math.random() * 0.5);
         return Math.floor(Math.max(12000, delay));
     },
 
     isValidUrl: (string) => {
         if (!string) return false;
-        try {
-            const url = new URL(string);
-            return url.protocol === "http:" || url.protocol === "https:";
-        } catch (_) {
-            return false;
-        }
+        try { const url = new URL(string); return url.protocol === "http:" || url.protocol === "https:"; } catch (_) { return false; }
     },
 
     getPoissonInterval: (meanTimeMs) => {
@@ -165,14 +189,18 @@ const Utils = {
         return template.replace(/\{name\}|\{username\}|\{nome\}/gi, safeName);
     },
 
-    isSuspiciousAccount: (user) => {
+    checkAccountStatus: (user) => {
+        if (!CONFIG.SAFE_MODE) return { safe: true }; 
+        
         const ageInDays = (Date.now() - user.createdTimestamp) / (1000 * 60 * 60 * 24);
-        if (ageInDays < CONFIG.MIN_ACCOUNT_AGE_DAYS) return true;
-        if (CONFIG.IGNORE_NO_AVATAR && !user.avatar) return true;
-        return false;
+        if (ageInDays < CONFIG.MIN_ACCOUNT_AGE_DAYS) return { safe: false, reason: `Too New (${ageInDays.toFixed(1)} days)` };
+        if (CONFIG.IGNORE_NO_AVATAR && !user.avatar) return { safe: false, reason: "No Avatar" };
+        
+        return { safe: true };
     },
+    
+    isSuspiciousAccount: (user) => !Utils.checkAccountStatus(user).safe,
 
-    // V2.0 Exact Logic
     parseSelectors: (text) => {
         const ignore = new Set();
         const only = new Set();
@@ -214,7 +242,7 @@ const Utils = {
 };
 
 // ============================================================================
-// 🧠 3. SERVICES (AI & RECOVERY)
+// 🧠 SERVIÇOS
 // ============================================================================
 
 class AIService {
@@ -225,12 +253,7 @@ class AIService {
     }
 
     async generateVariations(originalText, count = 5) {
-        const heuristics = [
-            originalText,
-            originalText.replace(/[.!]/g, '...'), 
-            originalText.charAt(0).toLowerCase() + originalText.slice(1)
-        ];
-
+        const heuristics = [originalText, originalText.replace(/[.!]/g, '...'), originalText.charAt(0).toLowerCase() + originalText.slice(1)];
         if (!this.model || originalText.length < 5) return heuristics;
         
         const cacheKey = crypto.createHash('md5').update(originalText).digest('hex');
@@ -266,7 +289,6 @@ class RecoveryService {
         const buffer = Buffer.from(safeState, 'utf-8');
         const filename = `backup_bot${botId}_${Date.now()}.json`;
 
-        // 1. DM Delivery
         if (state.initiatorId && client) {
             try {
                 const user = await client.users.fetch(state.initiatorId);
@@ -276,7 +298,6 @@ class RecoveryService {
             } catch (e) {}
         }
 
-        // 2. Email Delivery
         if (this.emailReady) {
             try {
                 await this.transporter.sendMail({
@@ -291,7 +312,7 @@ class RecoveryService {
 }
 
 // ============================================================================
-// 💾 4. GERENCIADOR DE ESTADO
+// 💾 GERENCIADOR DE ESTADO
 // ============================================================================
 
 class StateManager {
@@ -308,7 +329,8 @@ class StateManager {
             active: false, quarantine: false, lastError: null, text: "", variations: [], attachments: [], queue: [],
             ignore: new Set(), only: new Set(), currentRunStats: { success: 0, fail: 0, closed: 0 },
             progressMessageRef: null, currentAnnounceGuildId: null, privacyMode: 'public', initiatorId: null,
-            activityLog: [], lastActivityTimestamp: Date.now(), circuitBreakerActiveUntil: null, guildData: {} 
+            activityLog: [], lastActivityTimestamp: Date.now(), circuitBreakerActiveUntil: null, guildData: {},
+            nextSleepTrigger: null 
         };
     }
 
@@ -326,6 +348,7 @@ class StateManager {
             if (data.active && (!data.queue || data.queue.length === 0)) { 
                 data.active = false; data.quarantine = false; data.circuitBreakerActiveUntil = null;
             }
+            if (!data.nextSleepTrigger) data.nextSleepTrigger = Utils.getNextSleepTimestamp();
             return { ...this.getDefaultState(), ...data };
         } catch (error) { return this.getDefaultState(); }
     }
@@ -354,7 +377,7 @@ class StateManager {
 }
 
 // ============================================================================
-// 🧱 5. CLASSE MESTRA (STEALTHBOT)
+// 🧱 CLASSE MESTRA (STEALTHBOT)
 // ============================================================================
 
 class StealthBot {
@@ -367,11 +390,11 @@ class StealthBot {
         this.client = new Client({
             intents: [
                 GatewayIntentBits.Guilds, 
-                GatewayIntentBits.GuildMessages, // Essential
+                GatewayIntentBits.GuildMessages,
                 GatewayIntentBits.GuildMembers, 
                 GatewayIntentBits.GuildPresences, 
                 GatewayIntentBits.DirectMessages, 
-                GatewayIntentBits.MessageContent // Essential
+                GatewayIntentBits.MessageContent
             ],
             partials: [Partials.Channel, Partials.Message, Partials.GuildMember, Partials.User, Partials.Reaction],
             ws: { version: 10, properties: spoof },
@@ -388,11 +411,49 @@ class StealthBot {
         this.logBuffer = this.stateManager.state.activityLog || []; 
         this.recentResults = [];
         this.lastEmbedRecovery = 0;
+        this.wakingUpTime = null;
+        this.forcedRun = false;
+        this.memberCache = new Map(); 
 
         setInterval(() => this.runWatchdog(), 60000);
     }
 
-    // --- Helper: Safe Reply ---
+    // --- V27.0: Recursive Member Fetch ---
+    async getCachedMembers(guild) {
+        const cached = this.memberCache.get(guild.id);
+        if (cached && Date.now() - cached.timestamp < CONFIG.MEMBER_CACHE_TTL) return cached.members;
+        
+        Utils.log(this.id, `Fetching ALL members for ${guild.name}...`, "DEBUG");
+        
+        const members = new Map();
+        let lastId = 0;
+        
+        try {
+            while (true) {
+                const fetched = await guild.members.fetch({ limit: 1000, after: lastId });
+                if (fetched.size === 0) break;
+                
+                fetched.forEach((m) => members.set(m.id, m));
+                lastId = fetched.last().id;
+                
+                Utils.log(this.id, `Fetched ${fetched.size} members... Total: ${members.size}`, "DEBUG");
+                if (fetched.size < 1000) break;
+                
+                await new Promise(r => setTimeout(r, 500)); // Safety delay
+            }
+        } catch (e) {
+            Utils.log(this.id, `Fetch Error: ${e.message}. Using partial results.`, "WARN");
+        }
+
+        Utils.log(this.id, `Total Members Confirmed: ${members.size}`, "INFO");
+        
+        // Transform to array-like structure for filtering
+        const membersArray = Array.from(members.values());
+        
+        this.memberCache.set(guild.id, { members: membersArray, timestamp: Date.now() });
+        return membersArray;
+    }
+
     async safeReply(ctx, content, options = {}) {
         const payload = typeof content === 'string' ? { content, ...options } : { ...content, ...options };
         if (ctx.isChatInputCommand && ctx.isChatInputCommand()) {
@@ -439,8 +500,12 @@ class StealthBot {
             const minLeft = Math.ceil((s.circuitBreakerActiveUntil - Date.now()) / 60000);
             return { emoji: "🛡️", text: `Cooling (${minLeft}m)` };
         }
-        const hour = new Date().getHours();
-        if (hour >= CONFIG.SLEEP_START_HOUR && hour <= CONFIG.SLEEP_END_HOUR) return { emoji: "💤", text: "Sleeping" };
+        
+        if (this.wakingUpTime && Date.now() < this.wakingUpTime) {
+             const minsLeft = Math.ceil((this.wakingUpTime - Date.now()) / 60000);
+             return { emoji: "💤", text: `Sleeping (${Math.floor(minsLeft/60)}h ${minsLeft%60}m)` };
+        }
+
         if (!s.active && s.queue.length > 0) return { emoji: "⏸️", text: "Paused" };
         if (!s.active) return { emoji: "⚪", text: "Idle" };
         return { emoji: "🟢", text: "Active" };
@@ -454,8 +519,9 @@ class StealthBot {
              this.client.destroy();
              this.client.login(this.token);
         } else if (isFrozen) {
+            if (this.wakingUpTime && Date.now() < this.wakingUpTime) return; 
             this.addActivityLog("Freeze Detected. Restarting.", "WARN");
-            this.startWorker();
+            this.startWorker(true);
         }
     }
 
@@ -468,14 +534,17 @@ class StealthBot {
     async wait(ms) {
         this.lastActivityTime = Date.now();
         if (ms < 1000) return;
+        
         if (ms > 120000) { 
             const minutes = Math.floor(ms / 60000);
-            this.addActivityLog(`Wait: ${minutes}m...`, "INFO");
+            if (ms < CONFIG.SLEEP_MIN_DURATION) this.addActivityLog(`Wait: ${minutes}m...`, "INFO");
+            
             const chunks = Math.ceil(ms / 60000);
             for (let i = 0; i < chunks; i++) {
                 if (!this.stateManager.state.active || this.stateManager.state.quarantine) return;
                 await new Promise(r => setTimeout(r, 60000));
-                this.lastActivityTime = Date.now();
+                this.lastActivityTime = Date.now(); 
+                if (i % 5 === 0) await this.updateEmbed();
             }
         } else {
             await new Promise(r => setTimeout(r, ms));
@@ -488,7 +557,6 @@ class StealthBot {
         return this.sendsThisHour >= CONFIG.MAX_SENDS_PER_HOUR ? { exceeded: true, waitTime: this.hourlyResetTime - now } : { exceeded: false };
     }
 
-    // V19.0 Restored: WPM Logic
     calculateTypingTime(textLength) {
         const wpm = CONFIG.WPM_MEAN + (Math.random() * CONFIG.WPM_DEV * (Math.random() > 0.5 ? 1 : -1));
         const cps = (wpm * 5) / 60; 
@@ -563,11 +631,22 @@ class StealthBot {
             while (this.stateManager.state.active && this.stateManager.state.queue.length > 0) {
                 const state = this.stateManager.state;
                 
-                const hour = parseInt(new Intl.DateTimeFormat('en-US', { hour:'numeric', hour12:false, timeZone:CONFIG.TIMEZONE }).format(new Date()));
-                if (hour >= CONFIG.SLEEP_START_HOUR && hour <= CONFIG.SLEEP_END_HOUR) {
-                    this.addActivityLog("Sleep Mode", "SLEEP");
-                    await this.wait(600000); 
-                    continue;
+                if (!this.forcedRun && Utils.isSleepTime()) {
+                     this.addActivityLog("Sleep Mode Active. Stopping.", "SLEEP");
+                     const msUntilWake = Utils.getWakeTime();
+                     this.wakingUpTime = Date.now() + msUntilWake;
+                     await this.stateManager.modify(s => s.active = false); 
+                     
+                     setTimeout(() => {
+                         this.wakingUpTime = null;
+                         if (state.queue.length > 0) {
+                             this.addActivityLog("Waking Up! Resuming...", "INFO");
+                             this.stateManager.modify(s => s.active = true);
+                             this.startWorker();
+                         }
+                     }, msUntilWake);
+                     
+                     break; 
                 }
 
                 if (state.circuitBreakerActiveUntil && Date.now() < state.circuitBreakerActiveUntil) {
@@ -583,6 +662,8 @@ class StealthBot {
                 for (let i = 0; i < batchSize; i++) {
                     if (!state.active || state.queue.length === 0 || state.quarantine) break;
                     if (state.circuitBreakerActiveUntil) break;
+                    
+                    if (!this.forcedRun && Utils.isSleepTime()) break;
 
                     const limitCheck = this.checkHourlyLimit();
                     if (limitCheck.exceeded) await this.wait(limitCheck.waitTime + 10000);
@@ -602,7 +683,23 @@ class StealthBot {
                     try { user = await this.client.users.fetch(userId); } catch (e) { continue; }
                     const gd = await this.ensureGuildData(state.currentAnnounceGuildId);
 
-                    if (user.bot || Utils.isSuspiciousAccount(user) || gd.blockedDMs.has(userId)) continue;
+                    // V26: Relaxed Check
+                    // V28: Detailed Log for Skipped Users
+                    if (user.bot) {
+                        Utils.log(this.id, `Ignored ${user.tag}: Bot`, "DEBUG");
+                        continue;
+                    }
+                    if (gd.blockedDMs.has(userId)) {
+                        Utils.log(this.id, `Ignored ${user.tag}: Blocked/Ignored`, "DEBUG");
+                        continue;
+                    }
+                    
+                    // V28: Detailed Suspicious Check
+                    const accountStatus = Utils.checkAccountStatus(user);
+                    if (!accountStatus.safe) {
+                         Utils.log(this.id, `Ignored ${user.tag}: ${accountStatus.reason}`, "DEBUG");
+                         continue;
+                    }
 
                     const result = await this.sendStealthDM(user, state.text, state.attachments, state.variations);
                     this.sendsThisHour++;
@@ -618,7 +715,7 @@ class StealthBot {
                             circuit.successStreak++;
                             if (circuit.successStreak >= CONFIG.THRESHOLDS.REQUIRED_SUCCESS_TO_RESET) { circuit.closed = 0; circuit.network = 0; }
                             g.processedMembers.add(userId);
-                            this.engageContextually(state.currentAnnounceGuildId); // V19 Humanization
+                            this.engageContextually(state.currentAnnounceGuildId);
                         } else if (result.reason === 'closed') {
                             s.currentRunStats.closed++;
                             circuit.closed++;
@@ -672,7 +769,7 @@ class StealthBot {
 
                 if (state.quarantine) break;
 
-                if (state.active && state.queue.length > 0 && !state.circuitBreakerActiveUntil) {
+                if (state.active && state.queue.length > 0 && !state.circuitBreakerActiveUntil && Date.now() < state.nextSleepTrigger) {
                     const rate = this.analyzeRejectionRate();
                     let range = CONFIG.PAUSE_NORMAL;
                     if (rate > CONFIG.THRESHOLDS.CRITICAL_REJECTION_RATE) range = CONFIG.PAUSE_CRITICAL;
@@ -681,6 +778,8 @@ class StealthBot {
                     const pause = Math.floor(Math.random() * (range.MAX - range.MIN + 1)) + range.MIN;
                     this.addActivityLog(`Batch Pause: ${pause}m`, "PAUSE");
                     await this.wait(pause * 60 * 1000);
+                    
+                    this.forcedRun = false; 
                 }
             }
         } catch (error) {
@@ -694,7 +793,6 @@ class StealthBot {
         }
     }
 
-    // V19.0 Restored: Context Engagement
     async engageContextually(guildId) {
         if (!guildId || Math.random() > 0.15) return;
         try {
@@ -713,15 +811,24 @@ class StealthBot {
 
     async finalizeWorker() {
         const s = this.stateManager.state;
-        if (s.queue.length > 0 && s.currentAnnounceGuildId && !s.quarantine) {
+        if (s.queue.length === 0 && !s.quarantine) {
+            await this.stateManager.modify(st => {
+                const g = st.guildData[st.currentAnnounceGuildId];
+                if(g) g.pendingQueue = []; 
+            });
+            this.addActivityLog("Finalizing...", "INFO"); // V28 UX Fix
+        } else if (s.queue.length > 0 && s.currentAnnounceGuildId) {
             await this.stateManager.modify(st => {
                 const g = st.guildData[st.currentAnnounceGuildId];
                 if (g) g.pendingQueue.push(...st.queue);
                 st.queue = [];
             });
         }
+        
         if (!s.quarantine) await this.stateManager.modify(st => st.active = false);
+        await this.wait(2000);
         await this.updateEmbed();
+        this.addActivityLog("Campaign Finished", "SUCCESS");
         this.stateManager.forceSave();
     }
 
@@ -738,7 +845,7 @@ class StealthBot {
             const timeText = timeSince < 60 ? `${timeSince}s ago` : `${Math.floor(timeSince/60)}m ago`;
 
             const embed = new EmbedBuilder()
-                .setTitle(`${status.emoji} Bot ${this.id} | V19.1 POLISHED`)
+                .setTitle(`${status.emoji} Bot ${this.id} | V28.1 HOTFIX`)
                 .setDescription(`**Status:** ${status.text}`)
                 .setColor(s.quarantine ? 0xFF0000 : status.text === 'Active' ? 0x00FF00 : 0xFFAA00)
                 .addFields(
@@ -748,33 +855,37 @@ class StealthBot {
                 ).setTimestamp();
             if (s.quarantine) embed.addFields({ name: "🚨 Error", value: s.lastError || "?" });
             await msg.edit({ embeds: [embed] });
-        } catch (e) {
-            const now = Date.now();
-            if (s.privacyMode === 'private' && s.initiatorId && (now - this.lastEmbedRecovery > 300000)) {
-                try {
-                    const u = await this.client.users.fetch(s.initiatorId);
-                    const m = await u.send({ content: "Panel restored." });
-                    this.stateManager.modify(st => st.progressMessageRef = { channelId: m.channel.id, messageId: m.id });
-                    this.lastEmbedRecovery = now;
-                } catch {}
-            }
-        }
+        } catch (e) {}
     }
 
-    startWorker() {
-        if (!this.workerRunning && this.stateManager.state.active) {
-            this.workerRunning = true;
-            this.workerLoop();
+    startWorker(force = false) {
+        if (this.workerRunning) return;
+        
+        if (!force && Utils.isSleepTime()) {
+            this.addActivityLog("Sleep Mode. Worker delayed until 8 AM.", "SLEEP");
+            const msUntilWake = Utils.getWakeTime();
+            this.wakingUpTime = Date.now() + msUntilWake;
+            
+            setTimeout(() => {
+                this.wakingUpTime = null;
+                if (this.stateManager.state.active) {
+                    this.addActivityLog("Waking Up!", "INFO");
+                    this.startWorker();
+                }
+            }, msUntilWake);
+            return;
         }
+
+        this.forcedRun = force;
+        this.workerRunning = true;
+        this.workerLoop();
     }
 
     async start() {
-        // Events.ClientReady removed deprecation warning
         this.client.on(Events.ClientReady, async () => {
             Utils.log(this.id, `Online: ${this.client.user.tag}`, "SUCCESS");
             this.startPresenceLoop();
             
-            // Listeners inside Ready to ensure sequential init
             this.client.on('interactionCreate', i => this.handleInteraction(i));
             this.client.on('messageCreate', m => this.handleMessage(m));
 
@@ -799,12 +910,11 @@ class StealthBot {
     async handleInteraction(i) {
         if (!i.isChatInputCommand() || !i.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
         
-        // FIX: Defer first
+        // V24.0 INSTANT RESPONSE: Defer immediately to show "Thinking..."
         await i.deferReply({ flags: MessageFlags.Ephemeral });
         
         try {
             if (i.commandName === 'announce') {
-                // Check active
                 if (this.stateManager.state.active) return this.safeReply(i, "❌ Busy. /stop first.");
                 const text = i.options.getString('text');
                 const attach = i.options.getAttachment('file')?.url;
@@ -826,7 +936,6 @@ class StealthBot {
 
     async handleMessage(m) {
         if (m.author.bot) return;
-        // 🔥 FIX BUG #1: Check for Guild to prevent DM crash
         if (!m.guild) return;
         if (!m.content) return;
         if (!m.content.startsWith('!')) return;
@@ -868,7 +977,15 @@ class StealthBot {
         const isSlash = !!ctx.isChatInputCommand;
         const initiatorId = isSlash ? ctx.user.id : ctx.author.id;
 
-        // V2.0 Exact Logic
+        // V24.0 INSTANT FEEDBACK
+        let statusMsg;
+        if (isSlash) {
+            statusMsg = await ctx.editReply("⏳ Loading Members & AI...");
+        } else {
+            statusMsg = await ctx.reply("⏳ Loading Members & AI...");
+        }
+
+        // Logic continues in background...
         const parsed = Utils.parseSelectors(filtersStr || "");
         let messageText = isSlash ? text : parsed.cleaned; 
         
@@ -881,33 +998,84 @@ class StealthBot {
         }
 
         const attachments = (attachmentUrl && Utils.isValidUrl(attachmentUrl)) ? [attachmentUrl] : [];
-        if (!messageText && attachments.length === 0) return this.safeReply(ctx, "❌ Empty Message.");
+        if (!messageText && attachments.length === 0) {
+            if(isSlash) return ctx.editReply("❌ Empty Message.");
+            return statusMsg.edit("❌ Empty Message.");
+        }
 
+        // Heavy Tasks AFTER feedback
         const gd = await this.ensureGuildData(ctx.guild.id);
         const vars = await this.aiService.generateVariations(messageText);
         
-        try { await ctx.guild.members.fetch(); } catch(e){} 
-        const queue = ctx.guild.members.cache.filter(m => !m.user.bot && !parsed.ignore.has(m.id) && !gd.blockedDMs.has(m.id) && !Utils.isSuspiciousAccount(m.user) && (!parsed.only.size || parsed.only.has(m.id))).map(m => m.id);
+        // V27.0: Reliable Fetch
+        const members = await this.getCachedMembers(ctx.guild);
         
-        if (!parsed.hasForce && (gd.pendingQueue.length || gd.failedQueue.length)) return this.safeReply(ctx, "⚠️ Queue pending. Use `force`.");
-        if (!queue.length) return this.safeReply(ctx, "❌ No targets.");
+        // V28.0: Explicit Filtering Logic for Debug
+        const queue = [];
+        for (const m of members) {
+             // 1. Bot check
+             if (m.user.bot) {
+                 Utils.log(this.id, `Ignored ${m.user.tag}: Bot`, "DEBUG");
+                 continue;
+             }
+             // 2. Filters
+             if (parsed.ignore.has(m.id) || gd.blockedDMs.has(m.id)) {
+                 Utils.log(this.id, `Ignored ${m.user.tag}: Blocked/Ignored`, "DEBUG");
+                 continue;
+             }
+             // 3. Only
+             if (parsed.only.size > 0 && !parsed.only.has(m.id)) {
+                 continue;
+             }
+             // 4. Suspicious (Account Age/Avatar) - Can be bypassed by SAFE_MODE
+             const acctStatus = Utils.checkAccountStatus(m.user);
+             if (!acctStatus.safe) {
+                 Utils.log(this.id, `Ignored ${m.user.tag}: ${acctStatus.reason}`, "DEBUG");
+                 continue;
+             }
+             
+             queue.push(m.id);
+        }
+        
+        // V28.1 Logic Fix: Allow self-DM for test (remove initiator filter)
+        // const finalQueue = queue.filter(id => id !== initiatorId); // REMOVIDO
+        const finalQueue = queue;
+
+        if (!parsed.hasForce && (gd.pendingQueue.length || gd.failedQueue.length)) {
+            const msg = "⚠️ Queue pending. Use `force`.";
+            if(isSlash) return ctx.editReply(msg);
+            return statusMsg.edit(msg);
+        }
+        if (!finalQueue.length) {
+            const msg = "❌ No targets (Filters active). Check logs.";
+            if(isSlash) return ctx.editReply(msg);
+            return statusMsg.edit(msg);
+        }
+
+        const nextSleep = Utils.getNextSleepTimestamp();
 
         await this.stateManager.modify(s => {
-            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.queue = queue; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
+            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.queue = finalQueue; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
+            s.nextSleepTrigger = nextSleep; 
             if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; }
         });
 
-        let msg;
+        const initialEmbed = new EmbedBuilder()
+            .setTitle(`🚀 Initializing Bot ${this.id}...`)
+            .setDescription("Preparing queue and starting worker...")
+            .setColor(0x00AEEF)
+            .addFields({ name: "📊 Stats", value: `⏳ Queue: ${finalQueue.length}`, inline: false });
+
+        let panelMsg;
         if (isSlash) {
-            const dm = await ctx.user.createDM();
-            msg = await dm.send(`🚀 Started: ${queue.length}`);
-            await this.safeReply(ctx, "✅ Check DM.");
+            panelMsg = await ctx.editReply({ content: "", embeds: [initialEmbed] });
+            await this.safeReply(ctx, "✅ Panel in DM."); 
         } else {
-            msg = await ctx.reply(`🚀 Started: ${queue.length}`);
+            panelMsg = await statusMsg.edit({ content: "", embeds: [initialEmbed] });
         }
 
-        await this.stateManager.modify(s => s.progressMessageRef = { channelId: msg.channel.id, messageId: msg.id });
-        this.startWorker();
+        await this.stateManager.modify(s => s.progressMessageRef = { channelId: panelMsg.channel.id, messageId: panelMsg.id });
+        this.startWorker(true);
     }
 
     async execStop(ctx) {
@@ -945,26 +1113,35 @@ class StealthBot {
         let q = [...new Set([...this.stateManager.state.queue, ...gd.pendingQueue, ...gd.failedQueue, ...(backup?.queue || [])])].filter(id => !gd.blockedDMs.has(id));
         if (!q.length) return this.safeReply(ctx, "✅ Empty.");
         
+        const nextSleep = Utils.getNextSleepTimestamp();
+
         await this.stateManager.modify(s => {
             s.active = true; s.quarantine = false; s.queue = q; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.guildData[ctx.guild.id].pendingQueue = []; s.initiatorId = ctx.user?.id || ctx.author.id; 
+            s.nextSleepTrigger = nextSleep; 
             if (backup) { if(backup.text) s.text = backup.text; if(backup.variations) s.variations = backup.variations; if(backup.attachments) s.attachments = backup.attachments; }
         });
         
+        const initialEmbed = new EmbedBuilder()
+            .setTitle(`🔄 Resuming Bot ${this.id}...`)
+            .setDescription("Recovering state and starting worker...")
+            .setColor(0x00AEEF)
+            .addFields({ name: "📊 Stats", value: `⏳ Queue: ${q.length}`, inline: false });
+
         let msg;
         if (ctx.isChatInputCommand) {
              const dm = await ctx.user.createDM();
-             msg = await dm.send(`🔄 Resumed: ${q.length}`);
-             await this.safeReply(ctx, "✅ Resumed.");
+             msg = await dm.send({ embeds: [initialEmbed] });
+             await this.safeReply(ctx, "✅ Painel na DM.");
         } else {
-             msg = await ctx.reply(`🔄 Resumed: ${q.length}`);
+             msg = await ctx.reply({ embeds: [initialEmbed] });
         }
         await this.stateManager.modify(s => s.progressMessageRef = { channelId: msg.channel.id, messageId: msg.id });
-        this.startWorker();
+        
+        this.startWorker(true);
     }
 
     async execLastBackup(ctx) {
         const isSlash = !!ctx.isChatInputCommand;
-        // FIX BUG #2: Logic safe for messages
         const reply = async (msg) => {
             if (isSlash) return (ctx.deferred || ctx.replied) ? ctx.editReply(msg) : ctx.reply(msg);
             return ctx.reply(msg);
@@ -1043,11 +1220,10 @@ while(true) {
     bots.push(b);
 }
 
-// HTTP Server
 http.createServer((req, res) => {
     const uptime = process.uptime();
     const status = {
-        status: "V19.1 POLISHED ONLINE",
+        status: "V28.1 HOTFIX ONLINE",
         uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
         timestamp: new Date().toISOString(),
         bots: bots.map(b => ({ 
@@ -1059,7 +1235,7 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status, null, 2));
 }).listen(CONFIG.HTTP_PORT, () => {
-    console.log(`🛡️ V19.1 ONLINE | PORT ${CONFIG.HTTP_PORT}`);
+    console.log(`🛡️ V28.1 ONLINE | PORT ${CONFIG.HTTP_PORT}`);
 });
 
 process.on('SIGTERM', () => { bots.forEach(b => b.stateManager.forceSave()); process.exit(0); });
