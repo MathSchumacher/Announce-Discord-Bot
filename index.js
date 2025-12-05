@@ -1,13 +1,15 @@
 /**
  * ============================================================================
- * PROJECT: DISCORD MASS DM BOT - V32.0 EMOJI-SAFE EDITION (PERFORMANCE FIX)
- * ARCHITECTURE: V31.0 Core + Regex Fix for Inline Emojis + Turbo Fetch
+ * PROJECT: DISCORD MASS DM BOT - V33.0 STREAMING EDITION (ZERO LOADING)
+ * ARCHITECTURE: V31 Core + Inline Regex Fix + Streaming Fetch Architecture
  * AUTHOR: Matheus Schumacher & Gemini Engineering Team
  * DATE: December 2025
- * * [CHANGELOG V32.0 - PERFORMANCE PATCH]
- * 1. OPTIMIZATION: Implemented Promise.all for parallel AI/Member fetching.
- * 2. SPEED: Reduced pagination delay from 500ms to 5ms (Safe Turbo Mode).
- * 3. CORE: All safety features maintained.
+ * * [CHANGELOG V33.0 - STREAMING ARCHITECTURE]
+ * 1. ARCHITECTURE: Switched to Producer-Consumer pattern. Fetch pushes to queue
+ * while Worker sends simultaneously. No more waiting for full fetch.
+ * 2. REAL-TIME: Embed updates 'Queue' count live as members are found.
+ * 3. LOGIC: Worker now waits for Fetch to finish if queue runs dry momentarily.
+ * 4. SPEED: Zero loading time. Sending starts immediately.
  * ============================================================================
  */
 
@@ -237,8 +239,6 @@ const Utils = {
         }
         const cleaned = text.replace(regex, "").trim();
         const hasForce = /\bforce\b/i.test(cleaned);
-        // For commands !announce, we return clean text
-        // For slash commands, we will rely on parseSlashInput later
         return { cleaned: finalCleaned(cleaned), ignore, only, hasForce };
     },
 
@@ -267,7 +267,6 @@ const Utils = {
     }
 };
 
-// Helper for parseSelectors to avoid undefined error
 function finalCleaned(t) { 
     const hasForce = /\bforce\b/i.test(t); 
     return hasForce ? t.replace(/\bforce\b/i, '').trim() : t; 
@@ -294,37 +293,30 @@ class AIService {
         const prompt = `
         ROLE: Expert Paraphraser & Markdown Specialist.
         TASK: Generate ${count} variations of the input text.
-        
-        ⚠️ CRITICAL RULES (DO NOT BREAK):
-        1. PRESERVE ALL MARKDOWN: Keep Headers (#), Bold (**), Lists (-/•), and Links ([x](y)) EXACTLY as they are structure-wise.
+        CRITICAL RULES:
+        1. PRESERVE ALL MARKDOWN: Keep Headers (#), Bold (**), Lists (-/•), and Links ([x](y)) EXACTLY as they are.
         2. PRESERVE LAYOUT: Do NOT remove line breaks or merge paragraphs.
-        3. PRESERVE VARIABLES: Keep {name} placeholders intact.
-        4. PRESERVE ALL EMOJIS: just dont remove them and keep in same place as the original message.
-        5. ONLY change synonyms and sentence structure of the plain text parts.
-        
-        OUTPUT: A valid JSON Array of strings.
+        3. PRESERVE VARIABLES: Keep {name} placeholders.
+        4. PRESERVE ALL EMOJIS.
+        5. ONLY change synonyms and sentence structure of the plain text.
+        OUTPUT: JSON Array of strings.
         INPUT: """${originalText}"""
         `;
 
         try {
             const result = await this.model.generateContent(prompt);
             const response = await result.response.text();
-            
             const cleanJson = response.replace(/```json/g, '').replace(/```/g, '').trim();
             const variations = JSON.parse(cleanJson);
-            
             const flatVariations = Array.isArray(variations) 
                 ? variations.map(v => Utils.sanitizeString(v)) 
                 : [Utils.sanitizeString(variations)];
-                
             const final = [...new Set([...flatVariations, originalText])];
             
             if (this.cache.size >= CONFIG.MAX_AI_CACHE_SIZE) this.cache.delete(this.cache.keys().next().value);
             this.cache.set(cacheKey, final);
             return final;
-        } catch (error) { 
-            return heuristics; 
-        }
+        } catch (error) { return heuristics; }
     }
 }
 
@@ -383,7 +375,7 @@ class StateManager {
             ignore: new Set(), only: new Set(), currentRunStats: { success: 0, fail: 0, closed: 0 },
             progressMessageRef: null, currentAnnounceGuildId: null, privacyMode: 'public', initiatorId: null,
             activityLog: [], lastActivityTimestamp: Date.now(), circuitBreakerActiveUntil: null, guildData: {},
-            nextSleepTrigger: null 
+            nextSleepTrigger: null, isFetching: false // V33: Fetching Status
         };
     }
 
@@ -463,47 +455,70 @@ class StealthBot {
         this.lastPresenceActivity = ""; 
         this.logBuffer = this.stateManager.state.activityLog || []; 
         this.recentResults = [];
-        this.lastEmbedRecovery = 0;
         this.wakingUpTime = null;
         this.forcedRun = false;
         this.memberCache = new Map(); 
+        this.lastEmbedUpdate = 0; // Throttle embed updates
 
         setInterval(() => this.runWatchdog(), 60000);
     }
 
-    async getCachedMembers(guild) {
-        const cached = this.memberCache.get(guild.id);
-        if (cached && Date.now() - cached.timestamp < CONFIG.MEMBER_CACHE_TTL) return cached.members;
+    // 🔥 V33.0: STREAMING FETCH (PRODUCER)
+    async streamMembersToQueue(guild, filters) {
+        Utils.log(this.id, `Starting Stream Fetch for ${guild.name}...`, "DEBUG");
+        await this.stateManager.modify(s => s.isFetching = true);
         
-        Utils.log(this.id, `Fetching ALL members for ${guild.name}...`, "DEBUG");
-        
+        const gd = await this.ensureGuildData(guild.id);
         const members = new Map();
         let lastId = 0;
+        let count = 0;
         
         try {
-            while (true) {
+            while (this.stateManager.state.active) {
                 const fetched = await guild.members.fetch({ limit: 1000, after: lastId });
                 if (fetched.size === 0) break;
                 
-                fetched.forEach((m) => members.set(m.id, m));
+                const newIds = [];
+                for (const [id, m] of fetched) {
+                    members.set(id, m);
+                    if (m.user.bot) continue;
+                    if (filters.ignore.has(id) || gd.blockedDMs.has(id)) continue;
+                    if (filters.only.size > 0 && !filters.only.has(id)) continue;
+                    if (!Utils.checkAccountStatus(m.user).safe) continue;
+                    if (gd.processedMembers.has(id)) continue; 
+                    
+                    newIds.push(id);
+                }
+                
+                if (newIds.length > 0) {
+                    await this.stateManager.modify(s => s.queue.push(...newIds));
+                    // 🚀 Trigger worker if idle
+                    if (!this.workerRunning) this.startWorker(this.forcedRun);
+                    // 📊 Update visual stats immediately
+                    if (count % 5 === 0) await this.updateEmbed(); 
+                }
+
                 lastId = fetched.last().id;
+                count++;
                 
-                // 🚀 V32.0 OPTIMIZATION: Turbo Mode
-                // Reduced from 500ms to 5ms. Discord.js handles ratelimits internally.
-                // Added console feedback for instant awareness.
-                Utils.log(this.id, `⚡ Fetched chunk... Total: ${members.size}`, "DEBUG");
+                Utils.log(this.id, `⚡ Stream: +${newIds.length} users (Chunk ${count})`, "DEBUG");
                 if (fetched.size < 1000) break;
-                
-                await new Promise(r => setTimeout(r, 50)); 
+                await new Promise(r => setTimeout(r, 5)); 
             }
         } catch (e) {
-            Utils.log(this.id, `Fetch Error: ${e.message}. Using partial results.`, "WARN");
+            Utils.log(this.id, `Stream Error: ${e.message}`, "WARN");
+        } finally {
+            await this.stateManager.modify(s => s.isFetching = false);
+            Utils.log(this.id, `Stream Finished. Total Found: ${members.size}`, "INFO");
+            // Final check to ensure worker finishes
+            if (!this.workerRunning && this.stateManager.state.queue.length > 0) this.startWorker(this.forcedRun);
         }
+    }
 
-        Utils.log(this.id, `Total Members Confirmed: ${members.size}`, "INFO");
-        const membersArray = Array.from(members.values());
-        this.memberCache.set(guild.id, { members: membersArray, timestamp: Date.now() });
-        return membersArray;
+    // Backwards compatibility for other functions
+    async getCachedMembers(guild) {
+         // This is now legacy, but kept for compatibility if needed elsewhere
+         return guild.members.fetch(); 
     }
 
     async safeReply(ctx, content, options = {}) {
@@ -558,6 +573,7 @@ class StealthBot {
              return { emoji: "💤", text: `Sleeping (${Math.floor(minsLeft/60)}h ${minsLeft%60}m)` };
         }
 
+        if (s.isFetching) return { emoji: "⚡", text: "Streaming" };
         if (!s.active && s.queue.length > 0) return { emoji: "⏸️", text: "Paused" };
         if (!s.active) return { emoji: "⚪", text: "Idle" };
         return { emoji: "🟢", text: "Active" };
@@ -634,7 +650,6 @@ class StealthBot {
                 return { success: false, reason: "closed" }; 
             }
 
-            // V31.0: Robust selection & sanitization
             const textTemplate = (variations?.length > 0) 
                 ? variations[Math.floor(Math.random() * variations.length)] 
                 : rawText;
@@ -685,12 +700,24 @@ class StealthBot {
         }
     }
 
+    // 🔥 V33.0: CONSUMER (WORKER)
     async workerLoop() {
         this.addActivityLog("Worker Started", "INFO");
         const circuit = { closed: 0, network: 0, successStreak: 0 };
         
         try {
-            while (this.stateManager.state.active && this.stateManager.state.queue.length > 0) {
+            // Main Loop: Runs if queue has items OR fetching is still happening
+            while (this.stateManager.state.active && (this.stateManager.state.queue.length > 0 || this.stateManager.state.isFetching)) {
+                
+                // 1. Handle Empty Queue during Fetching (Wait for producer)
+                if (this.stateManager.state.queue.length === 0 && this.stateManager.state.isFetching) {
+                     await this.wait(1000); // Pulse wait
+                     continue;
+                }
+                
+                // 2. Double check safety
+                if (this.stateManager.state.queue.length === 0 && !this.stateManager.state.isFetching) break;
+
                 const state = this.stateManager.state;
                 
                 if (!this.forcedRun && Utils.isSleepTime()) {
@@ -719,12 +746,12 @@ class StealthBot {
                 }
 
                 const batchSize = Math.floor(Math.random() * (CONFIG.BATCH_SIZE_MAX - CONFIG.BATCH_SIZE_MIN + 1)) + CONFIG.BATCH_SIZE_MIN;
-                const guild = this.client.guilds.cache.get(state.currentAnnounceGuildId);
-
+                
                 for (let i = 0; i < batchSize; i++) {
-                    if (!state.active || state.queue.length === 0 || state.quarantine) break;
-                    if (state.circuitBreakerActiveUntil) break;
+                    if (!state.active || state.quarantine) break;
+                    if (state.queue.length === 0) break; // Break batch if empty
                     
+                    if (state.circuitBreakerActiveUntil) break;
                     if (!this.forcedRun && Utils.isSleepTime()) break;
 
                     const limitCheck = this.checkHourlyLimit();
@@ -733,19 +760,10 @@ class StealthBot {
                     const userId = state.queue.shift();
                     await this.stateManager.modify(() => {}); 
 
-                    if (guild) {
-                        try { await guild.members.fetch(userId); } catch (e) {
-                            Utils.log(this.id, `User ${userId} left. Skipping.`, "DEBUG");
-                            await this.stateManager.modify(s => { s.guildData[s.currentAnnounceGuildId].processedMembers.add(userId); });
-                            continue; 
-                        }
-                    }
-
                     let user;
                     try { user = await this.client.users.fetch(userId); } catch (e) { continue; }
                     const gd = await this.ensureGuildData(state.currentAnnounceGuildId);
 
-                    // V31.0: Check Filters
                     const accountStatus = Utils.checkAccountStatus(user);
                     if (user.bot || gd.blockedDMs.has(userId) || !accountStatus.safe) continue;
 
@@ -837,7 +855,10 @@ class StealthBot {
             this.addActivityLog(`Backup sent: ${res.method}`, "WARN");
         } finally {
             this.workerRunning = false;
-            await this.finalizeWorker();
+            // Only finalize if we are TRULY done (queue empty AND fetch done)
+            if (!this.stateManager.state.isFetching) {
+                await this.finalizeWorker();
+            }
         }
     }
 
@@ -881,6 +902,10 @@ class StealthBot {
     }
 
     async updateEmbed() {
+        // 🔥 Throttling logic to prevent 429 on channel updates
+        if (Date.now() - this.lastEmbedUpdate < 2000) return; 
+        this.lastEmbedUpdate = Date.now();
+
         const s = this.stateManager.state;
         if (!s.progressMessageRef) return;
         try {
@@ -893,7 +918,7 @@ class StealthBot {
             const timeText = timeSince < 60 ? `${timeSince}s ago` : `${Math.floor(timeSince/60)}m ago`;
 
             const embed = new EmbedBuilder()
-                .setTitle(`${status.emoji} Bot ${this.id} | V31.0 ULTIMATE`)
+                .setTitle(`${status.emoji} Bot ${this.id} | V33.0 STREAMING`)
                 .setDescription(`**Status:** ${status.text}`)
                 .setColor(s.quarantine ? 0xFF0000 : status.text === 'Active' ? 0x00FF00 : 0xFFAA00)
                 .addFields(
@@ -1027,71 +1052,47 @@ class StealthBot {
         // V24.0 INSTANT FEEDBACK
         let statusMsg;
         if (isSlash) {
-            statusMsg = await ctx.editReply("⏳ Loading Members & AI...");
+            statusMsg = await ctx.editReply("⏳ Starting Stream...");
         } else {
-            statusMsg = await ctx.reply("⏳ Loading Members & AI...");
+            statusMsg = await ctx.reply("⏳ Starting Stream...");
         }
 
-        // Logic continues in background...
         const parsed = Utils.parseSelectors(filtersStr || "");
-        
-        // 🔥 V31.0: Apply parser BEFORE anything else
         let messageText = isSlash ? Utils.parseSlashInput(text) : parsed.cleaned; 
 
         const attachments = (attachmentUrl && Utils.isValidUrl(attachmentUrl)) ? [attachmentUrl] : [];
         if (!messageText && attachments.length === 0) {
-            if(isSlash) return ctx.editReply("❌ Empty Message.");
-            return statusMsg.edit("❌ Empty Message.");
+            const msg = "❌ Empty Message.";
+            if(isSlash) return ctx.editReply(msg);
+            return statusMsg.edit(msg);
         }
 
         const gd = await this.ensureGuildData(ctx.guild.id);
         
-        // 🚀 V32.0 OPTIMIZATION: PARALLEL EXECUTION (AI + FETCH)
-        // Instead of waiting for AI then Fetch, we do both at same time.
-        const [vars, members] = await Promise.all([
-            this.aiService.generateVariations(messageText),
-            this.getCachedMembers(ctx.guild)
-        ]);
+        // AI Generation happens FIRST (must be ready before sending)
+        const vars = await this.aiService.generateVariations(messageText);
         
-        const queue = [];
-        for (const m of members) {
-             if (m.user.bot) continue;
-             if (parsed.ignore.has(m.id) || gd.blockedDMs.has(m.id)) continue;
-             if (parsed.only.size > 0 && !parsed.only.has(m.id)) continue;
-             
-             const acctStatus = Utils.checkAccountStatus(m.user);
-             if (!acctStatus.safe) continue;
-             
-             queue.push(m.id);
-        }
-        
-        // V28.1: Allow self-DM for test
-        const finalQueue = queue;
-
         if (!parsed.hasForce && (gd.pendingQueue.length || gd.failedQueue.length)) {
             const msg = "⚠️ Queue pending. Use `force`.";
-            if(isSlash) return ctx.editReply(msg);
-            return statusMsg.edit(msg);
-        }
-        if (!finalQueue.length) {
-            const msg = "❌ No targets (Filters active). Check logs.";
             if(isSlash) return ctx.editReply(msg);
             return statusMsg.edit(msg);
         }
 
         const nextSleep = Utils.getNextSleepTimestamp();
 
+        // 1. Initialize State
         await this.stateManager.modify(s => {
-            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.queue = finalQueue; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
+            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.queue = []; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
             s.nextSleepTrigger = nextSleep; 
+            s.isFetching = true; // Mark as fetching
             if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; }
         });
 
         const initialEmbed = new EmbedBuilder()
             .setTitle(`🚀 Initializing Bot ${this.id}...`)
-            .setDescription("Preparing queue and starting worker...")
+            .setDescription("Streaming Members & Sending...")
             .setColor(0x00AEEF)
-            .addFields({ name: "📊 Stats", value: `⏳ Queue: ${finalQueue.length}`, inline: false });
+            .addFields({ name: "📊 Stats", value: `⏳ Queue: 0`, inline: false });
 
         let panelMsg;
         if (isSlash) {
@@ -1102,11 +1103,15 @@ class StealthBot {
         }
 
         await this.stateManager.modify(s => s.progressMessageRef = { channelId: panelMsg.channel.id, messageId: panelMsg.id });
-        this.startWorker(true);
+        
+        // 2. 🔥 Start Streaming Fetch (Non-blocking)
+        // This runs in background and fills queue. 
+        // Worker will auto-start inside this function when first member is found.
+        this.streamMembersToQueue(ctx.guild, parsed);
     }
 
     async execStop(ctx) {
-        await this.stateManager.modify(s => s.active = false);
+        await this.stateManager.modify(s => { s.active = false; s.isFetching = false; });
         await this.safeReply(ctx, "🛑 Stopped.");
     }
 
@@ -1127,7 +1132,7 @@ class StealthBot {
     }
 
     async execReset(ctx) {
-        await this.stateManager.modify(s => { s.active = false; s.quarantine = false; s.queue = []; s.lastError = null; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.activityLog = []; s.circuitBreakerActiveUntil = null; });
+        await this.stateManager.modify(s => { s.active = false; s.quarantine = false; s.queue = []; s.lastError = null; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.activityLog = []; s.circuitBreakerActiveUntil = null; s.isFetching = false; });
         await this.safeReply(ctx, "☢️ Reset.");
     }
 
@@ -1250,7 +1255,7 @@ while(true) {
 http.createServer((req, res) => {
     const uptime = process.uptime();
     const status = {
-        status: "V31.0 ULTIMATE FORMAT ONLINE",
+        status: "V33.0 STREAMING FORMAT ONLINE",
         uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
         timestamp: new Date().toISOString(),
         bots: bots.map(b => ({ 
@@ -1262,7 +1267,7 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status, null, 2));
 }).listen(CONFIG.HTTP_PORT, () => {
-    console.log(`🛡️ V31.0 ONLINE | PORT ${CONFIG.HTTP_PORT}`);
+    console.log(`🛡️ V33.0 ONLINE | PORT ${CONFIG.HTTP_PORT}`);
 });
 
 process.on('SIGTERM', () => { bots.forEach(b => b.stateManager.forceSave()); process.exit(0); });
