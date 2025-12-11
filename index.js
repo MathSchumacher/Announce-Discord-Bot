@@ -389,7 +389,9 @@ class StateManager {
                 const g = data.guildData[gid];
                 g.processedMembers = new Set(g.processedMembers || []);
                 g.blockedDMs = new Set(g.blockedDMs || []);
-                if(!g.queue) g.queue = [];
+                if(!g.queue) g.queue = [];  // 🔧 FIX: Ensure queue exists
+                if(!g.pendingQueue) g.pendingQueue = [];  // 🔧 FIX: Ensure pendingQueue exists
+                if(!g.failedQueue) g.failedQueue = [];  // 🔧 FIX: Ensure failedQueue exists
             }
             if (data.active && (!data.guildData?.[data.currentAnnounceGuildId]?.queue?.length)) { 
                 data.active = false; data.quarantine = false; data.circuitBreakerActiveUntil = null;
@@ -402,7 +404,15 @@ class StateManager {
     saveImmediate() {
         const serializableState = { ...this.state, ignore: [...this.state.ignore], only: [...this.state.only], guildData: {} };
         for (const [gid, gdata] of Object.entries(this.state.guildData)) {
-            serializableState.guildData[gid] = { ...gdata, processedMembers: [...gdata.processedMembers], blockedDMs: [...gdata.blockedDMs], failedQueue: gdata.failedQueue.slice(-CONFIG.MAX_STATE_HISTORY), queue: [...(gdata.queue || [])] };
+            // 🔧 FIX: Properly serialize ALL guild data including queue
+            serializableState.guildData[gid] = { 
+                ...gdata, 
+                processedMembers: [...(gdata.processedMembers || [])], 
+                blockedDMs: [...(gdata.blockedDMs || [])], 
+                failedQueue: (gdata.failedQueue || []).slice(-CONFIG.MAX_STATE_HISTORY),
+                pendingQueue: [...(gdata.pendingQueue || [])],
+                queue: [...(gdata.queue || [])]  // 🔧 FIX: Include queue in serialization
+            };
         }
         const json = JSON.stringify(serializableState, null, 2);
         fs.writeFile(this.tempFilePath, json, (err) => {
@@ -638,7 +648,21 @@ class StealthBot {
 
     async ensureGuildData(guildId) {
         const s = this.stateManager.state;
-        if (!s.guildData[guildId]) s.guildData[guildId] = { processedMembers: new Set(), blockedDMs: new Set(), failedQueue: [], pendingQueue: [], queue: [] };
+        if (!s.guildData[guildId]) {
+            // 🔧 FIX: Always create with ALL required properties
+            s.guildData[guildId] = { 
+                processedMembers: new Set(), 
+                blockedDMs: new Set(), 
+                failedQueue: [], 
+                pendingQueue: [], 
+                queue: []  // 🔧 FIX: Include queue
+            };
+        } else {
+            // 🔧 FIX: Ensure existing data has queue
+            if (!s.guildData[guildId].queue) s.guildData[guildId].queue = [];
+            if (!s.guildData[guildId].pendingQueue) s.guildData[guildId].pendingQueue = [];
+            if (!s.guildData[guildId].failedQueue) s.guildData[guildId].failedQueue = [];
+        }
         return s.guildData[guildId];
     }
 
