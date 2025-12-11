@@ -745,23 +745,24 @@ class StealthBot {
         const circuit = { closed: 0, network: 0, successStreak: 0 };
         let circuitBreakerWasActive = false; // 🔧 FIX: Track if CB was triggered this iteration
         
+        // 🔧 FIX: Helper to always get FRESH queue length
+        const getQueue = () => this.stateManager.state.guildData[this.stateManager.state.currentAnnounceGuildId]?.queue || [];
+        
         try {
             // Main Loop: Runs if queue has items OR fetching is still happening
             while (this.stateManager.state.active) {
-                const currentGuildId = this.stateManager.state.currentAnnounceGuildId;
-                const currentQueue = this.stateManager.state.guildData[currentGuildId]?.queue || [];
                 
-                if (currentQueue.length === 0 && !this.stateManager.state.isFetching) break;
+                // 🔧 FIX: Always read fresh from state, not a cached reference
+                if (getQueue().length === 0 && !this.stateManager.state.isFetching) break;
 
                 // 1. Handle Empty Queue during Fetching (Wait for producer)
-                // Use a local ref check or ensure we break if invalid
-                if (currentQueue.length === 0 && this.stateManager.state.isFetching) {
+                if (getQueue().length === 0 && this.stateManager.state.isFetching) {
                      await this.wait(1000); // Pulse wait
                      continue;
                 }
                 
-                // 2. Double check safety
-                if (currentQueue.length === 0 && !this.stateManager.state.isFetching) break;
+                // 2. Double check safety with fresh read
+                if (getQueue().length === 0 && !this.stateManager.state.isFetching) break;
 
                 const state = this.stateManager.state;
                 
