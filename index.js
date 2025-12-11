@@ -87,10 +87,10 @@ const CONFIG = {
     MAX_STATE_HISTORY: 1000,
     MAX_AI_CACHE_SIZE: 1000, 
     
-    // --- Pausas (Minutes) - Adaptive ---
-    PAUSE_NORMAL: { MIN: 3, MAX: 8 },
-    PAUSE_CAUTION: { MIN: 8, MAX: 15 },
-    PAUSE_CRITICAL: { MIN: 15, MAX: 30 },
+    // --- Pausas (Minutes) - Adaptive (🔧 Optimized for speed) ---
+    PAUSE_NORMAL: { MIN: 2, MAX: 5 },   // Was 3-8
+    PAUSE_CAUTION: { MIN: 5, MAX: 10 },  // Was 8-15
+    PAUSE_CRITICAL: { MIN: 10, MAX: 20 }, // Was 15-30
 
     // --- Sleep Cycle ---
     SLEEP_START_HOUR: 3, 
@@ -186,11 +186,11 @@ const Utils = {
         while(u === 0) u = Math.random();
         while(v === 0) v = Math.random();
         const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-        const mu = 3.8; 
-        const sigma = 0.8;
+        const mu = 3.5;  // 🔧 Was 3.8, now faster (~30s avg instead of ~45s)
+        const sigma = 0.6; // 🔧 Was 0.8, less variance for more predictable timing
         let delay = Math.exp(mu + sigma * z) * 1000;
-        if (Utils.isPeakHour()) delay *= (1.2 + Math.random() * 0.5);
-        return Math.floor(Math.max(12000, delay));
+        if (Utils.isPeakHour()) delay *= (1.1 + Math.random() * 0.3); // 🔧 Was 1.2-1.7x, now 1.1-1.4x
+        return Math.floor(Math.max(8000, delay)); // 🔧 Was 12s min, now 8s min
     },
 
     isValidUrl: (string) => {
@@ -863,7 +863,9 @@ class StealthBot {
                     const delay = Utils.calculateHumanDelay();
                     await this.updateEmbed();
                     
-                    if (Math.random() < 0.15) {
+                    // 🔧 FIX: Only coffee break if MORE messages to send, low probability, and after 8+ sends
+                    const queueAfterSend = state.guildData[state.currentAnnounceGuildId]?.queue || [];
+                    if (queueAfterSend.length > 0 && i >= 8 && Math.random() < 0.05) {
                         this.addActivityLog("Coffee Break ☕", "INFO");
                         await this.wait(25000 + Math.random() * 35000);
                     } else {
@@ -1132,7 +1134,7 @@ class StealthBot {
             s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.currentAnnounceGuildId = ctx.guild.id; s.guildData[ctx.guild.id].queue = []; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
             s.nextSleepTrigger = nextSleep; 
             s.isFetching = true; // Mark as fetching
-            if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; }
+            if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; s.guildData[ctx.guild.id].processedMembers = new Set(); }
         });
 
         const initialEmbed = new EmbedBuilder()
