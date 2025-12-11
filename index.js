@@ -1,15 +1,12 @@
 /**
  * ============================================================================
- * PROJECT: DISCORD MASS DM BOT - V33.0 STREAMING EDITION (ZERO LOADING)
+ * PROJECT: DISCORD MASS DM BOT - V33.1 PER-SERVER QUEUE (ISOLATED_EDITION)
  * ARCHITECTURE: V31 Core + Inline Regex Fix + Streaming Fetch Architecture
  * AUTHOR: Matheus Schumacher & Gemini Engineering Team
  * DATE: December 2025
- * * [CHANGELOG V33.0 - STREAMING ARCHITECTURE]
- * 1. ARCHITECTURE: Switched to Producer-Consumer pattern. Fetch pushes to queue
- * while Worker sends simultaneously. No more waiting for full fetch.
- * 2. REAL-TIME: Embed updates 'Queue' count live as members are found.
- * 3. LOGIC: Worker now waits for Fetch to finish if queue runs dry momentarily.
- * 4. SPEED: Zero loading time. Sending starts immediately.
+ * * [CHANGELOG V33.1 - PER-SERVER QUEUE FIX]
+ * 1. ARCHITECTURE: Switched to Guild-Specific Queues. Each server has its own isolated queue.
+ * 2. SAFETY: Prevents cross-server leaks when stopping/starting in different guilds.
  * ============================================================================
  */
 
@@ -97,7 +94,10 @@ const CONFIG = {
 
     // --- Sleep Cycle ---
     SLEEP_START_HOUR: 3, 
-    SLEEP_END_HOUR: 8
+    SLEEP_END_HOUR: 8,
+    
+    // --- Long Wait Threshold ---
+    SLEEP_MIN_DURATION: 5 * 60 * 1000 // 5 minutes - waits longer than this won't log
 };
 
 // ============================================================================
@@ -389,8 +389,9 @@ class StateManager {
                 const g = data.guildData[gid];
                 g.processedMembers = new Set(g.processedMembers || []);
                 g.blockedDMs = new Set(g.blockedDMs || []);
+                if(!g.queue) g.queue = [];
             }
-            if (data.active && (!data.queue || data.queue.length === 0)) { 
+            if (data.active && (!data.guildData?.[data.currentAnnounceGuildId]?.queue?.length)) { 
                 data.active = false; data.quarantine = false; data.circuitBreakerActiveUntil = null;
             }
             if (!data.nextSleepTrigger) data.nextSleepTrigger = Utils.getNextSleepTimestamp();
@@ -401,7 +402,7 @@ class StateManager {
     saveImmediate() {
         const serializableState = { ...this.state, ignore: [...this.state.ignore], only: [...this.state.only], guildData: {} };
         for (const [gid, gdata] of Object.entries(this.state.guildData)) {
-            serializableState.guildData[gid] = { ...gdata, processedMembers: [...gdata.processedMembers], blockedDMs: [...gdata.blockedDMs], failedQueue: gdata.failedQueue.slice(-CONFIG.MAX_STATE_HISTORY) };
+            serializableState.guildData[gid] = { ...gdata, processedMembers: [...gdata.processedMembers], blockedDMs: [...gdata.blockedDMs], failedQueue: gdata.failedQueue.slice(-CONFIG.MAX_STATE_HISTORY), queue: [...(gdata.queue || [])] };
         }
         const json = JSON.stringify(serializableState, null, 2);
         fs.writeFile(this.tempFilePath, json, (err) => {
@@ -491,7 +492,7 @@ class StealthBot {
                 }
                 
                 if (newIds.length > 0) {
-                    await this.stateManager.modify(s => s.queue.push(...newIds));
+                    await this.stateManager.modify(s => s.guildData[guild.id].queue.push(...newIds));
                     // 🚀 Trigger worker if idle
                     if (!this.workerRunning) this.startWorker(this.forcedRun);
                     // 📊 Update visual stats immediately
@@ -511,7 +512,7 @@ class StealthBot {
             await this.stateManager.modify(s => s.isFetching = false);
             Utils.log(this.id, `Stream Finished. Total Found: ${members.size}`, "INFO");
             // Final check to ensure worker finishes
-            if (!this.workerRunning && this.stateManager.state.queue.length > 0) this.startWorker(this.forcedRun);
+            if (!this.workerRunning && this.stateManager.state.guildData[guild.id]?.queue.length > 0) this.startWorker(this.forcedRun);
         }
     }
 
@@ -574,7 +575,9 @@ class StealthBot {
         }
 
         if (s.isFetching) return { emoji: "⚡", text: "Streaming" };
-        if (!s.active && s.queue.length > 0) return { emoji: "⏸️", text: "Paused" };
+        
+        const qLen = s.guildData[s.currentAnnounceGuildId]?.queue.length || 0;
+        if (!s.active && qLen > 0) return { emoji: "⏸️", text: "Paused" };
         if (!s.active) return { emoji: "⚪", text: "Idle" };
         return { emoji: "🟢", text: "Active" };
     }
@@ -605,7 +608,7 @@ class StealthBot {
         
         if (ms > 120000) { 
             const minutes = Math.floor(ms / 60000);
-            if (ms < CONFIG.SLEEP_MIN_DURATION) this.addActivityLog(`Wait: ${minutes}m...`, "INFO");
+            this.addActivityLog(`Wait: ${minutes}m...`, "INFO"); // Log all long waits (>2min)
             
             const chunks = Math.ceil(ms / 60000);
             for (let i = 0; i < chunks; i++) {
@@ -635,7 +638,7 @@ class StealthBot {
 
     async ensureGuildData(guildId) {
         const s = this.stateManager.state;
-        if (!s.guildData[guildId]) s.guildData[guildId] = { processedMembers: new Set(), blockedDMs: new Set(), failedQueue: [], pendingQueue: [] };
+        if (!s.guildData[guildId]) s.guildData[guildId] = { processedMembers: new Set(), blockedDMs: new Set(), failedQueue: [], pendingQueue: [], queue: [] };
         return s.guildData[guildId];
     }
 
@@ -704,19 +707,25 @@ class StealthBot {
     async workerLoop() {
         this.addActivityLog("Worker Started", "INFO");
         const circuit = { closed: 0, network: 0, successStreak: 0 };
+        let circuitBreakerWasActive = false; // 🔧 FIX: Track if CB was triggered this iteration
         
         try {
             // Main Loop: Runs if queue has items OR fetching is still happening
-            while (this.stateManager.state.active && (this.stateManager.state.queue.length > 0 || this.stateManager.state.isFetching)) {
+            while (this.stateManager.state.active) {
+                const currentGuildId = this.stateManager.state.currentAnnounceGuildId;
+                const currentQueue = this.stateManager.state.guildData[currentGuildId]?.queue || [];
                 
+                if (currentQueue.length === 0 && !this.stateManager.state.isFetching) break;
+
                 // 1. Handle Empty Queue during Fetching (Wait for producer)
-                if (this.stateManager.state.queue.length === 0 && this.stateManager.state.isFetching) {
+                // Use a local ref check or ensure we break if invalid
+                if (currentQueue.length === 0 && this.stateManager.state.isFetching) {
                      await this.wait(1000); // Pulse wait
                      continue;
                 }
                 
                 // 2. Double check safety
-                if (this.stateManager.state.queue.length === 0 && !this.stateManager.state.isFetching) break;
+                if (currentQueue.length === 0 && !this.stateManager.state.isFetching) break;
 
                 const state = this.stateManager.state;
                 
@@ -728,7 +737,8 @@ class StealthBot {
                       
                       setTimeout(() => {
                           this.wakingUpTime = null;
-                          if (state.queue.length > 0) {
+                          const qNow = this.stateManager.state.guildData[this.stateManager.state.currentAnnounceGuildId]?.queue || [];
+                          if (qNow.length > 0) {
                               this.addActivityLog("Waking Up! Resuming...", "INFO");
                               this.stateManager.modify(s => s.active = true);
                               this.startWorker();
@@ -743,13 +753,17 @@ class StealthBot {
                     this.addActivityLog(`Cooling: ${Math.ceil(waitMs/60000)}m left`, "CIRCUIT");
                     await this.wait(waitMs);
                     await this.stateManager.modify(s => s.circuitBreakerActiveUntil = null);
+                    circuitBreakerWasActive = true; // 🔧 FIX: Mark that we just came out of cooling
                 }
 
                 const batchSize = Math.floor(Math.random() * (CONFIG.BATCH_SIZE_MAX - CONFIG.BATCH_SIZE_MIN + 1)) + CONFIG.BATCH_SIZE_MIN;
                 
                 for (let i = 0; i < batchSize; i++) {
                     if (!state.active || state.quarantine) break;
-                    if (state.queue.length === 0) break; // Break batch if empty
+                    
+                    // RE-READ queue because it might have changed or we are shifting
+                    const bQueue = state.guildData[state.currentAnnounceGuildId]?.queue || [];
+                    if (bQueue.length === 0) break; // Break batch if empty
                     
                     if (state.circuitBreakerActiveUntil) break;
                     if (!this.forcedRun && Utils.isSleepTime()) break;
@@ -757,8 +771,8 @@ class StealthBot {
                     const limitCheck = this.checkHourlyLimit();
                     if (limitCheck.exceeded) await this.wait(limitCheck.waitTime + 10000);
 
-                    const userId = state.queue.shift();
-                    await this.stateManager.modify(() => {}); 
+                    const userId = bQueue.shift();
+                    await this.stateManager.modify(() => {}); // Trigger save for queue update
 
                     let user;
                     try { user = await this.client.users.fetch(userId); } catch (e) { continue; }
@@ -834,8 +848,11 @@ class StealthBot {
                 }
 
                 if (state.quarantine) break;
+                
+                const finalQ = state.guildData[state.currentAnnounceGuildId]?.queue || [];
 
-                if (state.active && state.queue.length > 0 && !state.circuitBreakerActiveUntil && Date.now() < state.nextSleepTrigger) {
+                // 🔧 FIX: Skip batch pause if we just came out of circuit breaker cooling
+                if (!circuitBreakerWasActive && state.active && finalQ.length > 0 && !state.circuitBreakerActiveUntil && Date.now() < state.nextSleepTrigger) {
                     const rate = this.analyzeRejectionRate();
                     let range = CONFIG.PAUSE_NORMAL;
                     if (rate > CONFIG.THRESHOLDS.CRITICAL_REJECTION_RATE) range = CONFIG.PAUSE_CRITICAL;
@@ -847,6 +864,7 @@ class StealthBot {
                     
                     this.forcedRun = false; 
                 }
+                circuitBreakerWasActive = false; // Reset flag for next iteration
             }
         } catch (error) {
             this.addActivityLog(`CRASH: ${error.message}`, "ERROR");
@@ -880,17 +898,21 @@ class StealthBot {
 
     async finalizeWorker() {
         const s = this.stateManager.state;
-        if (s.queue.length === 0 && !s.quarantine) {
+        const guildQ = s.guildData[s.currentAnnounceGuildId]?.queue || [];
+
+        if (guildQ.length === 0 && !s.quarantine) {
             await this.stateManager.modify(st => {
                 const g = st.guildData[st.currentAnnounceGuildId];
                 if(g) g.pendingQueue = []; 
             });
             this.addActivityLog("Finalizing...", "INFO"); 
-        } else if (s.queue.length > 0 && s.currentAnnounceGuildId) {
+        } else if (guildQ.length > 0 && s.currentAnnounceGuildId) {
             await this.stateManager.modify(st => {
                 const g = st.guildData[st.currentAnnounceGuildId];
-                if (g) g.pendingQueue.push(...st.queue);
-                st.queue = [];
+                if (g) {
+                    g.pendingQueue.push(...g.queue);
+                    g.queue = [];
+                }
             });
         }
         
@@ -916,13 +938,14 @@ class StealthBot {
             const logs = this.logBuffer.slice(0, 5).map(l => `${l.time} ${l.icon} ${l.message}`).join('\n') || 'Starting...';
             const timeSince = Math.floor((Date.now() - s.lastActivityTimestamp) / 1000);
             const timeText = timeSince < 60 ? `${timeSince}s ago` : `${Math.floor(timeSince/60)}m ago`;
+            const qLen = s.guildData[s.currentAnnounceGuildId]?.queue.length || 0;
 
             const embed = new EmbedBuilder()
                 .setTitle(`${status.emoji} Bot ${this.id} | V33.0 STREAMING`)
                 .setDescription(`**Status:** ${status.text}`)
                 .setColor(s.quarantine ? 0xFF0000 : status.text === 'Active' ? 0x00FF00 : 0xFFAA00)
                 .addFields(
-                    { name: "📊 Stats", value: `✅ ${stats.success} | 🚫 ${stats.closed} | ❌ ${stats.fail} | ⏳ ${s.queue.length}`, inline: false },
+                    { name: "📊 Stats", value: `✅ ${stats.success} | 🚫 ${stats.closed} | ❌ ${stats.fail} | ⏳ ${qLen}`, inline: false },
                     { name: "🔍 Activity Log", value: `\`\`\`${logs}\`\`\``, inline: false },
                     { name: "⏱️ Last Activity", value: timeText, inline: true }
                 ).setTimestamp();
@@ -1082,7 +1105,7 @@ class StealthBot {
 
         // 1. Initialize State
         await this.stateManager.modify(s => {
-            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.queue = []; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
+            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.currentAnnounceGuildId = ctx.guild.id; s.guildData[ctx.guild.id].queue = []; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
             s.nextSleepTrigger = nextSleep; 
             s.isFetching = true; // Mark as fetching
             if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; }
@@ -1117,22 +1140,34 @@ class StealthBot {
 
     async execStatus(ctx) {
         const s = this.stateManager.state;
-        const embed = new EmbedBuilder().setTitle("Status").setDescription(`Active: ${s.active}\nQueue: ${s.queue.length}\nQuarantine: ${s.quarantine}`);
+        const qLen = s.currentAnnounceGuildId ? (s.guildData[s.currentAnnounceGuildId]?.queue.length || 0) : 0;
+        const embed = new EmbedBuilder().setTitle("Status").setDescription(`Active: ${s.active}\nQueue: ${qLen}\nQuarantine: ${s.quarantine}`);
         await this.safeReply(ctx, { embeds: [embed] });
     }
 
     async execUpdate(ctx) {
         const gd = await this.ensureGuildData(ctx.guild.id);
         try { await ctx.guild.members.fetch(); } catch(e){}
-        const known = new Set([...gd.processedMembers, ...gd.blockedDMs, ...gd.failedQueue, ...gd.pendingQueue, ...this.stateManager.state.queue]);
+        // Use guild-specfic queue
+        const known = new Set([...gd.processedMembers, ...gd.blockedDMs, ...gd.failedQueue, ...gd.pendingQueue, ...(gd.queue || [])]);
         const newMems = ctx.guild.members.cache.filter(m => !m.user.bot && !known.has(m.id) && !Utils.isSuspiciousAccount(m.user)).map(m => m.id);
         if (!newMems.length) return this.safeReply(ctx, "✅ Nothing new.");
-        await this.stateManager.modify(st => st.queue.push(...newMems));
+        
+        await this.stateManager.modify(st => st.guildData[ctx.guild.id].queue.push(...newMems));
         await this.safeReply(ctx, `🔄 Added +${newMems.length}.`);
     }
 
     async execReset(ctx) {
-        await this.stateManager.modify(s => { s.active = false; s.quarantine = false; s.queue = []; s.lastError = null; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.activityLog = []; s.circuitBreakerActiveUntil = null; s.isFetching = false; });
+        await this.stateManager.modify(s => { 
+            s.active = false; 
+            s.quarantine = false; 
+            if(s.currentAnnounceGuildId && s.guildData[s.currentAnnounceGuildId]) s.guildData[s.currentAnnounceGuildId].queue = []; 
+            s.lastError = null; 
+            s.currentRunStats = { success: 0, fail: 0, closed: 0 }; 
+            s.activityLog = []; 
+            s.circuitBreakerActiveUntil = null; 
+            s.isFetching = false; 
+        });
         await this.safeReply(ctx, "☢️ Reset.");
     }
 
@@ -1142,13 +1177,20 @@ class StealthBot {
         if (attachmentUrl) { const res = await Utils.fetchJsonFromUrl(attachmentUrl); if (res.success) backup = res.data; }
         
         const gd = await this.ensureGuildData(ctx.guild.id);
-        let q = [...new Set([...this.stateManager.state.queue, ...gd.pendingQueue, ...gd.failedQueue, ...(backup?.queue || [])])].filter(id => !gd.blockedDMs.has(id));
+        // Use guild specific queue in reconstruction
+        let q = [...new Set([...(gd.queue || []), ...gd.pendingQueue, ...gd.failedQueue, ...(backup?.queue || [])])].filter(id => !gd.blockedDMs.has(id));
         if (!q.length) return this.safeReply(ctx, "✅ Empty.");
         
         const nextSleep = Utils.getNextSleepTimestamp();
 
         await this.stateManager.modify(s => {
-            s.active = true; s.quarantine = false; s.queue = q; s.currentAnnounceGuildId = ctx.guild.id; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.guildData[ctx.guild.id].pendingQueue = []; s.initiatorId = ctx.user?.id || ctx.author.id; 
+            s.active = true; 
+            s.quarantine = false; 
+            s.guildData[ctx.guild.id].queue = q; 
+            s.currentAnnounceGuildId = ctx.guild.id; 
+            s.currentRunStats = { success: 0, fail: 0, closed: 0 }; 
+            s.guildData[ctx.guild.id].pendingQueue = []; 
+            s.initiatorId = ctx.user?.id || ctx.author.id; 
             s.nextSleepTrigger = nextSleep; 
             if (backup) { if(backup.text) s.text = backup.text; if(backup.variations) s.variations = backup.variations; if(backup.attachments) s.attachments = backup.attachments; }
         });
@@ -1185,7 +1227,8 @@ class StealthBot {
         
         if (!gd || (!gd.pendingQueue.length && !gd.failedQueue.length)) return reply("✅ No data.");
         
-        const totalQueue = s.queue.length + (gd ? (gd.pendingQueue.length + gd.failedQueue.length) : 0);
+        // Sum guild specific queue
+        const totalQueue = (gd.queue?.length || 0) + (gd ? (gd.pendingQueue.length + gd.failedQueue.length) : 0);
         const lastActivity = new Date(s.lastActivityTimestamp).toLocaleString('pt-BR', { timeZone: CONFIG.TIMEZONE });
 
         const embed = new EmbedBuilder()
@@ -1260,7 +1303,7 @@ http.createServer((req, res) => {
         timestamp: new Date().toISOString(),
         bots: bots.map(b => ({ 
             id: b.id, 
-            q: b.stateManager.state.queue.length, 
+            q: b.stateManager.state.guildData[b.stateManager.state.currentAnnounceGuildId]?.queue.length || 0, 
             active: b.stateManager.state.active 
         }))
     };
