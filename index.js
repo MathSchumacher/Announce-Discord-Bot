@@ -515,16 +515,19 @@ class StealthBot {
                 
                 if (newIds.length > 0) {
                     await this.stateManager.modify(s => s.guildData[guild.id].queue.push(...newIds));
+                    const currentQueueSize = this.stateManager.state.guildData[guild.id]?.queue.length || 0;
+                    Utils.log(this.id, `⚡ Stream: +${newIds.length} users (Total Queue: ${currentQueueSize})`, "DEBUG");
                     // 🚀 Trigger worker if idle
                     if (!this.workerRunning) this.startWorker(this.forcedRun);
                     // 📊 Update visual stats immediately
                     if (count % 5 === 0) await this.updateEmbed(); 
+                } else {
+                    Utils.log(this.id, `⚡ Stream: 0 new users (Chunk ${count}, all filtered)`, "DEBUG");
                 }
 
                 lastId = fetched.last().id;
                 count++;
                 
-                Utils.log(this.id, `⚡ Stream: +${newIds.length} users (Chunk ${count})`, "DEBUG");
                 if (fetched.size < 1000) break;
                 await new Promise(r => setTimeout(r, 5)); 
             }
@@ -1144,7 +1147,13 @@ class StealthBot {
 
         // 1. Initialize State
         await this.stateManager.modify(s => {
-            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.currentAnnounceGuildId = ctx.guild.id; s.guildData[ctx.guild.id].queue = []; s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
+            // 🔧 FIX: Ensure guildData exists INSIDE the callback
+            if (!s.guildData[ctx.guild.id]) {
+                s.guildData[ctx.guild.id] = { processedMembers: new Set(), blockedDMs: new Set(), failedQueue: [], pendingQueue: [], queue: [] };
+            }
+            s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.currentAnnounceGuildId = ctx.guild.id; 
+            s.guildData[ctx.guild.id].queue = []; // Now safe to access
+            s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
             s.nextSleepTrigger = nextSleep; 
             s.isFetching = true; // Mark as fetching
             if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; s.guildData[ctx.guild.id].processedMembers = new Set(); }
