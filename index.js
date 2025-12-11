@@ -284,7 +284,8 @@ class AIService {
     }
 
     async generateVariations(originalText, count = 5) {
-        const heuristics = [originalText, originalText.replace(/[.!]/g, '...'), originalText.charAt(0).toLowerCase() + originalText.slice(1)];
+        // 🔧 FIX: Safe heuristics that DON'T break URLs
+        const heuristics = [originalText]; // Only use original - no risky replacements
         if (!this.model || originalText.length < 5) return heuristics;
         
         const cacheKey = crypto.createHash('md5').update(originalText).digest('hex');
@@ -294,11 +295,12 @@ class AIService {
         ROLE: Expert Paraphraser & Markdown Specialist.
         TASK: Generate ${count} variations of the input text.
         CRITICAL RULES:
-        1. PRESERVE ALL MARKDOWN: Keep Headers (#), Bold (**), Lists (-/•), and Links ([x](y)) EXACTLY as they are.
-        2. PRESERVE LAYOUT: Do NOT remove line breaks or merge paragraphs.
-        3. PRESERVE VARIABLES: Keep {name} placeholders.
-        4. PRESERVE ALL EMOJIS.
-        5. ONLY change synonyms and sentence structure of the plain text.
+        1. PRESERVE ALL URLS EXACTLY: Never modify any URL, link, or domain (e.g., https://discord.gg/xxx, discord.gg/xxx). Copy them CHARACTER BY CHARACTER.
+        2. PRESERVE ALL MARKDOWN: Keep Headers (#), Bold (**), Lists (-/•), and Links ([x](y)) EXACTLY as they are.
+        3. PRESERVE LAYOUT: Do NOT remove line breaks or merge paragraphs.
+        4. PRESERVE VARIABLES: Keep {name} placeholders.
+        5. PRESERVE ALL EMOJIS.
+        6. ONLY change synonyms and sentence structure of the plain text AROUND the preserved elements.
         OUTPUT: JSON Array of strings.
         INPUT: """${originalText}"""
         `;
@@ -311,7 +313,17 @@ class AIService {
             const flatVariations = Array.isArray(variations) 
                 ? variations.map(v => Utils.sanitizeString(v)) 
                 : [Utils.sanitizeString(variations)];
-            const final = [...new Set([...flatVariations, originalText])];
+            
+            // 🔧 FIX: Validate URLs are intact, reject broken variations
+            const urlPattern = /(https?:\/\/[^\s]+)/g;
+            const originalUrls = originalText.match(urlPattern) || [];
+            const validVariations = flatVariations.filter(v => {
+                const varUrls = v.match(urlPattern) || [];
+                // Check all original URLs are present and unmodified
+                return originalUrls.every(url => v.includes(url));
+            });
+            
+            const final = [...new Set([...validVariations, originalText])];
             
             if (this.cache.size >= CONFIG.MAX_AI_CACHE_SIZE) this.cache.delete(this.cache.keys().next().value);
             this.cache.set(cacheKey, final);
