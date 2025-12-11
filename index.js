@@ -105,25 +105,30 @@ const CONFIG = {
 // ============================================================================
 
 const Utils = {
-    // 🔥 V32.0: EMOJI-SAFE FORMATTER
+    // 🔥 V33.2: SLASH FORMAT RECONSTRUCTOR
     parseSlashInput: (text) => {
         if (!text) return "";
         let str = String(text);
 
-        // 1. Normalizar quebras de linha literais
+        // 1. Normalizar quebras de linha literais (\n -> newline real)
         str = str.replace(/\\n/g, '\n');
 
-        // 2. Preservar Headers (#, ##, ###)
-        // Garante que headers tenham uma linha vazia antes, a menos que seja a primeira linha
-        str = str.replace(/([^\n])\s*(#+ )/g, '$1\n\n$2');
+        // 2. 🔧 RECONSTRUCT: Discord slash commands remove line breaks!
+        // Detect bullet patterns after punctuation OR emoji and split them
+        // Pattern: "text. - bullet" or "text 🔥 - bullet" -> add line break before bullet
+        str = str.replace(/([.!?:…]|[\u{1F300}-\u{1F9FF}])\s+([-*•+➦➜→=>])\s+/gu, '$1\n$2 ');
+        
+        // 3. 🔧 RECONSTRUCT: Headers that got merged (text # Header)
+        str = str.replace(/([^\n#])\s*(#{1,3}\s+)/g, '$1\n\n$2');
+        
+        // 4. � RECONSTRUCT: Multiple bullets in sequence without line breaks
+        // "- item1 - item2" -> "- item1\n- item2"
+        str = str.replace(/(\S)\s+([-*•])\s+(?=[A-ZÀ-Ú])/g, '$1\n$2 ');
+
+        // 5. Preservar Headers no início
         str = str.replace(/^\s*(#+ )/g, '$1');
 
-        // 3. 🔥 FIX: Preservar Bullets APENAS no início da linha
-        // Impede que emojis no meio do texto sejam quebrados
-        str = str.replace(/(\n|^)\s*([-*•+➦➜→=>])\s+/gm, '$1$2 ');
-
-        // 4. Limpeza de Espaços
-        // Remove excesso de quebras (>2) para evitar buracos, mas mantém parágrafos
+        // 6. Limpeza de Espaços excessivos
         str = str.replace(/\n{3,}/g, '\n\n');
         
         return str.trim();
@@ -801,9 +806,9 @@ class StealthBot {
                 for (let i = 0; i < batchSize; i++) {
                     if (!state.active || state.quarantine) break;
                     
-                    // RE-READ queue because it might have changed or we are shifting
-                    const bQueue = state.guildData[state.currentAnnounceGuildId]?.queue || [];
-                    if (bQueue.length === 0) break; // Break batch if empty
+                    // 🔧 FIX: Get DIRECT reference to the queue array in state (not a copy)
+                    const guildQueue = state.guildData[state.currentAnnounceGuildId]?.queue;
+                    if (!guildQueue || guildQueue.length === 0) break; // Break batch if empty
                     
                     if (state.circuitBreakerActiveUntil) break;
                     if (!this.forcedRun && Utils.isSleepTime()) break;
@@ -811,8 +816,9 @@ class StealthBot {
                     const limitCheck = this.checkHourlyLimit();
                     if (limitCheck.exceeded) await this.wait(limitCheck.waitTime + 10000);
 
-                    const userId = bQueue.shift();
-                    await this.stateManager.modify(() => {}); // Trigger save for queue update
+                    // 🔧 FIX: Shift from the ACTUAL queue in state, not a copy
+                    const userId = guildQueue.shift();
+                    this.stateManager.scheduleSave(); // Trigger save for queue update
 
                     let user;
                     try { user = await this.client.users.fetch(userId); } catch (e) { continue; }
@@ -1123,7 +1129,14 @@ class StealthBot {
         }
 
         const parsed = Utils.parseSelectors(filtersStr || "");
+        
+        // 🔍 DEBUG: Log original text from Discord
+        Utils.log(this.id, `📝 RAW TEXT FROM DISCORD:\n${text}`, "DEBUG");
+        
         let messageText = isSlash ? Utils.parseSlashInput(text) : parsed.cleaned; 
+        
+        // 🔍 DEBUG: Log after parseSlashInput
+        Utils.log(this.id, `📝 AFTER parseSlashInput:\n${messageText}`, "DEBUG");
 
         const attachments = (attachmentUrl && Utils.isValidUrl(attachmentUrl)) ? [attachmentUrl] : [];
         if (!messageText && attachments.length === 0) {
@@ -1136,6 +1149,9 @@ class StealthBot {
         
         // AI Generation happens FIRST (must be ready before sending)
         const vars = await this.aiService.generateVariations(messageText);
+        
+        // 🔍 DEBUG: Log after AI
+        Utils.log(this.id, `📝 AI VARIATIONS [0]:\n${vars[0]}`, "DEBUG");
         
         if (!parsed.hasForce && (gd.pendingQueue.length || gd.failedQueue.length)) {
             const msg = "⚠️ Queue pending. Use `force`.";
@@ -1153,10 +1169,11 @@ class StealthBot {
             }
             s.active = true; s.quarantine = false; s.text = messageText; s.variations = vars; s.attachments = attachments; s.currentAnnounceGuildId = ctx.guild.id; 
             s.guildData[ctx.guild.id].queue = []; // Now safe to access
+            s.guildData[ctx.guild.id].processedMembers = new Set(); // 🔧 FIX: ALWAYS clear on new campaign
             s.currentRunStats = { success: 0, fail: 0, closed: 0 }; s.privacyMode = isSlash ? 'private' : 'public'; s.initiatorId = initiatorId; s.activityLog = []; s.lastActivityTimestamp = Date.now();
             s.nextSleepTrigger = nextSleep; 
             s.isFetching = true; // Mark as fetching
-            if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; s.guildData[ctx.guild.id].processedMembers = new Set(); }
+            if (parsed.hasForce) { s.guildData[ctx.guild.id].pendingQueue = []; s.guildData[ctx.guild.id].failedQueue = []; s.guildData[ctx.guild.id].blockedDMs = new Set(); }
         });
 
         const initialEmbed = new EmbedBuilder()
